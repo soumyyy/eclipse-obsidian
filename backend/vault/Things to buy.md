@@ -1,0 +1,20 @@
+- [ ] Backpack
+- [ ] Watch daily
+- [ ] Special watch (tissot)
+- [ ] Earbuds
+- [ ] MokaPot
+- [ ] Chemex
+- [ ] Metal sunglasses
+- [ ] Black boots
+- [ ] Daily shoes
+- [ ] High top converse
+- [ ] Brown formals
+- [ ] Monitor
+- [ ] Room lights - bulb
+- [ ] Room lights - Tube
+- [ ] Headphones
+- [ ] Wallet
+- [ ] Safety Razor
+- [ ] Alexa
+- [ ] Speakers
+- [ ] 

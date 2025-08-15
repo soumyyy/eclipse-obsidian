@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: obsidian-rag-backend
+    env: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    disk:
+      name: faiss-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: ASSISTANT_NAME
+        value: Atlas
+      - key: OBSIDIAN_VAULT
+        value: ./vault
+      - key: MODEL_NAME
+        value: cerebras/gpt-oss-20b
+      # Set secrets in the Render dashboard:
+      # CEREBRAS_API_KEY, VERCEL_SITE, BACKEND_TOKEN, (later: GIT_URL, GIT_SSH_KEY, GIT_BRANCH, GIT_WEBHOOK_SECRET)
