@@ -1,8 +1,17 @@
-import os, glob
+import os
+
+EXCLUDE_DIRS = {".git", ".obsidian", "node_modules", ".venv", ".idea", ".vscode", "__pycache__"}
+VALID_EXTS = {".md", ".MD", ".markdown", ".mdown", ".mdx"}  # include more variants
 
 def iter_markdown_files(root: str):
-    for path in glob.glob(os.path.join(root, "**", "*.md"), recursive=True):
-        yield path
+    root = os.path.abspath(root)
+    for dirpath, dirnames, filenames in os.walk(root):
+        # prune excluded dirs in-place so os.walk doesn't descend into them
+        dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS and not d.startswith(".git")]
+        for fname in filenames:
+            _, ext = os.path.splitext(fname)
+            if ext in VALID_EXTS:
+                yield os.path.join(dirpath, fname)
 
 def chunk_text(text: str, chunk_size=900, chunk_overlap=150):
     words = text.split()

@@ -5,7 +5,8 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 # --------------------------------------
 
-from fastapi import FastAPI, Header, HTTPException
+import hmac, hashlib
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Optional   # <-- ensure Optional is imported
@@ -14,6 +15,8 @@ from rag import RAG
 from llm_cerebras import cerebras_chat
 from memory import recall_memories, add_memory
 from tools import web_search_ddg, create_note
+from git_sync import pull_and_changes, ensure_clone
+from ingest import rebuild_all, incremental_update
 
 load_dotenv()
 ASSISTANT = os.getenv("ASSISTANT_NAME", "Atlas")
@@ -64,6 +67,21 @@ def get_retriever():
         _retriever = RAG(top_k=5)
     return _retriever
 
+@app.on_event("startup")
+def bootstrap_index():
+    # if user provided a repo, try to clone on boot
+    try:
+        if os.getenv("GIT_URL"):
+            ensure_clone()
+        # if no FAISS yet, build it (works for local vault or cloned repo)
+        if not (os.path.exists("./data/index.faiss") and os.path.exists("./data/docs.pkl")):
+            rebuild_all()
+        # warm retriever
+        _ = get_retriever()
+        print("Bootstrap complete.")
+    except Exception as e:
+        print(f"[startup] Non-fatal: {e}")
+
 def verify_auth(x_api_key: str | None):
     if BACKEND_TOKEN and x_api_key != BACKEND_TOKEN:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -72,6 +90,47 @@ def verify_auth(x_api_key: str | None):
 @app.get("/healthz")
 def healthz():
     return {"ok": True, "assistant": ASSISTANT}
+
+def _verify_github_sig(secret: str, payload: bytes, signature: str | None):
+    if not (secret and signature and signature.startswith("sha256=")):
+        return False
+    mac = hmac.new(secret.encode(), msg=payload, digestmod=hashlib.sha256)
+    return hmac.compare_digest(mac.hexdigest(), signature.split("=")[1])
+
+@app.post("/webhook/github")
+async def github_webhook(request: Request):
+    secret = os.getenv("GIT_WEBHOOK_SECRET", "")
+    body = await request.body()
+    sig = request.headers.get("x-hub-signature-256")
+    if secret and not _verify_github_sig(secret, body, sig):
+        raise HTTPException(401, "Invalid signature")
+
+    event = await request.json()
+    branch = os.getenv("GIT_BRANCH", "main")
+    if event.get("ref", "").split("/")[-1] != branch:
+        return {"status": "ignored", "reason": event.get("ref")}
+
+    changed, head = pull_and_changes()
+    added = changed["added_or_modified"]; deleted = changed["deleted"]
+
+    if deleted or len(added) > 200:
+        mode = "rebuild_all"
+        rebuild_all()
+    else:
+        mode = "incremental"
+        incremental_update(added, deleted)
+
+    # Reload retriever to pick up the new index
+    global _retriever
+    _retriever = None
+
+    return {
+        "status": "ok",
+        "mode": mode,
+        "commit": head,
+        "added_or_modified": len(added),
+        "deleted": len(deleted),
+    }
 
 @app.post("/chat", response_model=ChatOut)
 def chat(payload: ChatIn, x_api_key: str | None = Header(default=None)):
