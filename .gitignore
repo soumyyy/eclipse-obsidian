@@ -8,6 +8,8 @@ backend/__pycache__/
 backend/__pycache__/
 backend/.ssh/*
 backend/.ssh/
+backend/data/*
+backend/data/
 
 frontend/node_modules/*
 frontend/.env
