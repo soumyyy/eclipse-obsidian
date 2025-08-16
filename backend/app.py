@@ -1,11 +1,10 @@
 # --- load .env before anything else ---
-import os
+import os, shutil, hmac, hashlib
 from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 # --------------------------------------
 
-import hmac, hashlib
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -17,6 +16,8 @@ from memory import recall_memories, add_memory
 from tools import web_search_ddg, create_note
 from git_sync import pull_and_changes, ensure_clone
 from ingest import rebuild_all, incremental_update
+from github_fetch import fetch_repo_snapshot
+from ingest import main as ingest_main
 
 load_dotenv()
 ASSISTANT = os.getenv("ASSISTANT_NAME", "Atlas")
@@ -24,6 +25,21 @@ VERCEL_SITE = os.getenv("VERCEL_SITE", "http://localhost:3000")
 BACKEND_TOKEN = os.getenv("BACKEND_TOKEN", "")
 
 app = FastAPI(title="Obsidian RAG + Cerebras Assistant")
+
+@app.on_event("startup")
+def bootstrap_index():
+    try:
+        # build index once if missing
+        if not (os.path.exists("./data/index.faiss") and os.path.exists("./data/docs.pkl")):
+            tmp = fetch_repo_snapshot()
+            try:
+                ingest_main(vault_dir=tmp)
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+        _ = get_retriever()  # warm
+        print("Bootstrap complete.")
+    except Exception as e:
+        print(f"[startup] Non-fatal: {e}")
 
 # CORS (lock to your UI origin)
 app.add_middleware(
@@ -97,6 +113,12 @@ def _verify_github_sig(secret: str, payload: bytes, signature: str | None):
     mac = hmac.new(secret.encode(), msg=payload, digestmod=hashlib.sha256)
     return hmac.compare_digest(mac.hexdigest(), signature.split("=")[1])
 
+def _verify_github_sig(secret: str, payload: bytes, signature: str | None):
+    if not (secret and signature and signature.startswith("sha256=")):
+        return False
+    mac = hmac.new(secret.encode(), msg=payload, digestmod=hashlib.sha256)
+    return hmac.compare_digest(mac.hexdigest(), signature.split("=")[1])
+
 @app.post("/webhook/github")
 async def github_webhook(request: Request):
     secret = os.getenv("GIT_WEBHOOK_SECRET", "")
@@ -106,31 +128,20 @@ async def github_webhook(request: Request):
         raise HTTPException(401, "Invalid signature")
 
     event = await request.json()
-    branch = os.getenv("GIT_BRANCH", "main")
+    branch = os.getenv("GITHUB_BRANCH", "main")
     if event.get("ref", "").split("/")[-1] != branch:
         return {"status": "ignored", "reason": event.get("ref")}
 
-    changed, head = pull_and_changes()
-    added = changed["added_or_modified"]; deleted = changed["deleted"]
+    # fresh snapshot → rebuild
+    tmp = fetch_repo_snapshot()
+    try:
+        ingest_main(vault_dir=tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
-    if deleted or len(added) > 200:
-        mode = "rebuild_all"
-        rebuild_all()
-    else:
-        mode = "incremental"
-        incremental_update(added, deleted)
-
-    # Reload retriever to pick up the new index
-    global _retriever
-    _retriever = None
-
-    return {
-        "status": "ok",
-        "mode": mode,
-        "commit": head,
-        "added_or_modified": len(added),
-        "deleted": len(deleted),
-    }
+    # refresh retriever
+    global _retriever; _retriever = None
+    return {"status": "ok", "mode": "zip_rebuild"}
 
 @app.post("/chat", response_model=ChatOut)
 def chat(payload: ChatIn, x_api_key: str | None = Header(default=None)):

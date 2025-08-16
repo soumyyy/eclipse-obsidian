@@ -3,7 +3,7 @@ import os
 import re
 import pickle
 from collections import Counter
-from typing import List
+from typing import List, Optional
 
 import faiss
 from tqdm import tqdm
@@ -13,25 +13,24 @@ from bs4 import BeautifulSoup
 from embedder import Embeddings
 
 # -------------------- Config --------------------
+# Default vault dir (you can override by passing vault_dir to main())
 VAULT = os.getenv("OBSIDIAN_VAULT", "./vault")
 DATA_DIR = "./data"
 INDEX_PATH = os.path.join(DATA_DIR, "index.faiss")
 DOCS_PATH = os.path.join(DATA_DIR, "docs.pkl")
 
-# Directories to skip during traversal
+# Exclusions & allowed file types
 EXCLUDE_DIRS = {
     ".git", ".obsidian", "node_modules", ".venv", ".idea", ".vscode", "__pycache__",
 }
-
-# File extensions to include
 VALID_EXTS = {".md", ".MD", ".markdown", ".mdown", ".mdx"}
 
 # -------------------- Helpers --------------------
 def iter_markdown_files(root: str):
-    """Yield absolute file paths for all markdown-like files under root, excluding junk dirs."""
+    """Yield absolute paths for markdown-like files under root, excluding junk dirs."""
     root = os.path.abspath(root)
     for dirpath, dirnames, filenames in os.walk(root):
-        # prune excluded dirs in-place so os.walk doesn't descend into them
+        # prune excluded dirs so walk doesn't descend into them
         dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS and not d.startswith(".git")]
         for fname in filenames:
             _, ext = os.path.splitext(fname)
@@ -60,18 +59,23 @@ def md_to_text(md: str) -> str:
     return BeautifulSoup(html, "html.parser").get_text(separator="\n")
 
 # -------------------- Build index --------------------
-def main():
+def main(vault_dir: Optional[str] = None):
+    """
+    Build (or rebuild) the FAISS index from the given directory.
+    If vault_dir is None, uses VAULT from env (./vault by default).
+    """
     os.makedirs(DATA_DIR, exist_ok=True)
 
-    paths = list(iter_markdown_files(VAULT))
-    print(f"Found {len(paths)} markdown files under {os.path.abspath(VAULT)}")
+    base = os.path.abspath(vault_dir or VAULT)
+    paths = list(iter_markdown_files(base))
+    print(f"Found {len(paths)} markdown files under {base}")
     for p in sorted(paths)[:25]:
-        print(" -", os.path.relpath(p))
+        print(" -", os.path.relpath(p, start=base))
     if len(paths) > 25:
         print(f" ... and {len(paths)-25} more")
 
     if not paths:
-        print(f"No markdown files found. Add notes to {VAULT} and rerun.")
+        print(f"No markdown files found. Add notes to {base} and rerun.")
         return
 
     emb = Embeddings()
@@ -94,7 +98,7 @@ def main():
             docs.append({"id": doc_id, "path": path, "chunk": ch})
             texts.append(ch)
             doc_id += 1
-        per_file[os.path.relpath(path)] += len(chunks)
+        per_file[os.path.relpath(path, start=base)] += len(chunks)
 
     if not texts:
         print("No text extracted after parsing markdown. Nothing to index.")
@@ -118,26 +122,24 @@ def main():
 
 # -------------------- Webhook helpers --------------------
 def rebuild_all():
-    """Full rebuild used by webhook or first boot."""
+    """Full rebuild (used by startup or webhook)."""
     main()
 
 def incremental_update(added_or_modified: List[str], deleted: List[str]):
     """
-    Simple incremental policy:
-      - If deletions exist OR large change set → full rebuild (IndexFlatIP doesn't delete).
+    Simple incremental:
+      - If deletions exist OR large change set → full rebuild (IndexFlatIP can't delete).
       - Else append new chunks for changed files.
-    Paths in added_or_modified/deleted should be absolute paths inside the repo checkout.
+    Paths must be absolute.
     """
-    # Fallbacks / safety
     if deleted or len(added_or_modified) > 200:
         print("Large change set or deletions detected → full rebuild.")
         return rebuild_all()
 
-    if not os.path.exists(INDEX_PATH) or not os.path.exists(DOCS_PATH):
+    if not (os.path.exists(INDEX_PATH) and os.path.exists(DOCS_PATH)):
         print("No existing index/docs — running full rebuild.")
         return rebuild_all()
 
-    # Load current index & docs
     index = faiss.read_index(INDEX_PATH)
     with open(DOCS_PATH, "rb") as f:
         docs = pickle.load(f)
