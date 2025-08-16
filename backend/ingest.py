@@ -1,184 +1,271 @@
-# backend/ingest.py
+# ingest.py
+# Always fetches the Obsidian vault from GitHub (ZIP snapshot) and (re)builds FAISS.
+# Requires env: GITHUB_OWNER, GITHUB_REPO, GITHUB_REF, GITHUB_TOKEN
 import os
 import re
+import gc
+import sys
+import sqlite3
+import shutil
 import pickle
-from collections import Counter
-from typing import List, Optional
+import argparse
+from typing import List, Dict, Iterable, Tuple
 
-import faiss
+# Keep RAM + threads low on small boxes
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("FAISS_NUM_THREADS", "1")
+
 from tqdm import tqdm
-from markdown import markdown
 from bs4 import BeautifulSoup
+from sentence_transformers import SentenceTransformer
+import numpy as np
+import faiss
 
-from embedder import Embeddings
+from github_fetch import fetch_repo_snapshot  # <- we rely on this
 
-# -------------------- Config --------------------
-# Default vault dir (you can override by passing vault_dir to main())
-VAULT = os.getenv("OBSIDIAN_VAULT", "./vault")
 DATA_DIR = "./data"
 INDEX_PATH = os.path.join(DATA_DIR, "index.faiss")
 DOCS_PATH = os.path.join(DATA_DIR, "docs.pkl")
+SQLITE_PATH = os.path.join(DATA_DIR, "docs.sqlite")
 
-# Exclusions & allowed file types
-EXCLUDE_DIRS = {
-    ".git", ".obsidian", "node_modules", ".venv", ".idea", ".vscode", "__pycache__",
-}
-VALID_EXTS = {".md", ".MD", ".markdown", ".mdown", ".mdx"}
+# ---------- text utils ----------
 
-# -------------------- Helpers --------------------
-def iter_markdown_files(root: str):
-    """Yield absolute paths for markdown-like files under root, excluding junk dirs."""
-    root = os.path.abspath(root)
-    for dirpath, dirnames, filenames in os.walk(root):
-        # prune excluded dirs so walk doesn't descend into them
-        dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS and not d.startswith(".git")]
-        for fname in filenames:
-            _, ext = os.path.splitext(fname)
-            if ext in VALID_EXTS:
-                yield os.path.join(dirpath, fname)
+FRONTMATTER_RE = re.compile(r"^---\s*\n.*?\n---\s*\n", re.DOTALL)
+WIKI_LINK_RE   = re.compile(r"\[\[([^\]|]+)(\|[^\]]+)?\]\]")
+MD_LINK_RE     = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+CODEBLOCK_RE   = re.compile(r"```.*?```", re.DOTALL)
 
-def chunk_text(text: str, chunk_size=900, chunk_overlap=150) -> List[str]:
-    words = text.split()
-    if not words:
+def read_text(path: str) -> str:
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        return f.read()
+
+def clean_markdown(md: str) -> str:
+    # drop frontmatter & code blocks (often noisy for embeddings)
+    md = FRONTMATTER_RE.sub("", md)
+    md = CODEBLOCK_RE.sub("", md)
+    # convert wiki links to just the display text or target
+    md = WIKI_LINK_RE.sub(lambda m: m.group(1), md)
+    # strip any inline HTML without requiring lxml
+    try:
+        md = BeautifulSoup(md, "html.parser").get_text()
+    except Exception:
+        md = re.sub(r"<[^>]+>", " ", md)
+    # collapse links to their label
+    md = MD_LINK_RE.sub(lambda m: m.group(1), md)
+    # normalize whitespace
+    md = re.sub(r"[ \t]+", " ", md)
+    md = re.sub(r"\n{3,}", "\n\n", md)
+    return md.strip()
+
+def iter_markdown_files(root: str, include_ext=(".md",)) -> Iterable[str]:
+    for dirpath, _, filenames in os.walk(root):
+        # skip hidden dirs like .git, .obsidian
+        parts = os.path.relpath(dirpath, root).split(os.sep)
+        if any(p.startswith(".") for p in parts if p != "."):
+            continue
+        for fn in filenames:
+            if fn.lower().endswith(include_ext):
+                yield os.path.join(dirpath, fn)
+
+# ---------- smarter chunking (sentence-aware) ----------
+# You can tweak target_size/overlap via CLI if you like.
+
+def smart_chunk(text: str, target_size=800, overlap=100, min_chunk=50) -> List[str]:
+    """
+    Smarter chunking that respects sentence boundaries and paragraphs.
+    - target_size: approx characters per chunk
+    - overlap: approx characters of overlap (derived from trailing sentences)
+    """
+    text = text.strip()
+    if not text or len(text) <= target_size:
+        return [text] if text and len(text) > min_chunk else []
+
+    # Split into sentences using a robust regex
+    sentence_pattern = r'(?<=[.!?])\s+'
+    sentences = re.split(sentence_pattern, text)
+    if not sentences:
         return []
-    chunks, start = [], 0
-    while start < len(words):
-        end = min(start + chunk_size, len(words))
-        chunks.append(" ".join(words[start:end]))
-        if end == len(words):
-            break
-        start = max(0, end - chunk_overlap)
+
+    chunks: List[str] = []
+    current = ""
+
+    for sent in sentences:
+        s = sent.strip()
+        if not s:
+            continue
+
+        if current and len(current) + 1 + len(s) > target_size:
+            if len(current) > min_chunk:
+                chunks.append(current.strip())
+
+            # build an overlap from trailing sentences of current
+            overlap_text = ""
+            tail_sents = re.split(r'(?<=[.!?])\s+', current)
+            for t in reversed(tail_sents[-3:]):
+                candidate = (t + " " + overlap_text).strip()
+                if len(candidate) <= overlap:
+                    overlap_text = candidate
+                else:
+                    break
+            current = (overlap_text + " " + s).strip() if overlap_text else s
+        else:
+            current = (current + " " + s).strip() if current else s
+
+    if current and len(current) > min_chunk:
+        chunks.append(current.strip())
+
     return chunks
 
-def md_to_text(md: str) -> str:
-    """Convert Markdown → plain text, stripping fenced code blocks to avoid noisy chunks."""
-    # remove fenced code blocks ```...```
-    md = re.sub(r"```.+?```", "", md, flags=re.S)
-    # convert to HTML then strip tags
-    html = markdown(md)
-    return BeautifulSoup(html, "html.parser").get_text(separator="\n")
+# ---------- embedding / index ----------
 
-# -------------------- Build index --------------------
-def main(vault_dir: Optional[str] = None):
-    """
-    Build (or rebuild) the FAISS index from the given directory.
-    If vault_dir is None, uses VAULT from env (./vault by default).
-    """
+def load_embedder(model_name: str = "sentence-transformers/all-MiniLM-L6-v2") -> SentenceTransformer:
+    return SentenceTransformer(model_name)
+
+def embed_texts(texts: List[str], model: SentenceTransformer, batch_size=64) -> np.ndarray:
+    embs = []
+    for i in tqdm(range(0, len(texts), batch_size), desc="Embedding"):
+        batch = texts[i:i+batch_size]
+        vecs = model.encode(
+            batch,
+            show_progress_bar=False,
+            convert_to_numpy=True,
+            normalize_embeddings=False,  # we normalize below for cosine/IP
+        )
+        embs.append(vecs.astype(np.float32))
+    return np.vstack(embs) if embs else np.zeros((0, 384), dtype=np.float32)
+
+def build_faiss_index(embs: np.ndarray) -> faiss.Index:
+    # cosine similarity via inner product on normalized vectors
+    faiss.normalize_L2(embs)
+    index = faiss.IndexFlatIP(embs.shape[1])
+    index.add(embs)
+    return index
+
+# ---------- persistence ----------
+
+def save_pickle(records: List[Dict]):
     os.makedirs(DATA_DIR, exist_ok=True)
-
-    base = os.path.abspath(vault_dir or VAULT)
-    paths = list(iter_markdown_files(base))
-    print(f"Found {len(paths)} markdown files under {base}")
-    for p in sorted(paths)[:25]:
-        print(" -", os.path.relpath(p, start=base))
-    if len(paths) > 25:
-        print(f" ... and {len(paths)-25} more")
-
-    if not paths:
-        print(f"No markdown files found. Add notes to {base} and rerun.")
-        return
-
-    emb = Embeddings()
-    docs = []
-    texts = []
-    per_file = Counter()
-    doc_id = 0
-
-    for path in tqdm(paths, desc="Scanning vault"):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                raw = f.read()
-        except Exception:
-            continue
-        text = md_to_text(raw)
-        chunks = chunk_text(text, chunk_size=900, chunk_overlap=150)
-        if not chunks:
-            continue
-        for ch in chunks:
-            docs.append({"id": doc_id, "path": path, "chunk": ch})
-            texts.append(ch)
-            doc_id += 1
-        per_file[os.path.relpath(path, start=base)] += len(chunks)
-
-    if not texts:
-        print("No text extracted after parsing markdown. Nothing to index.")
-        return
-
-    print("Per-file chunk counts (top 30):")
-    for f, n in per_file.most_common(30):
-        print(f"  {n:4d}  {f}")
-    print(f"Created {len(docs)} chunks total")
-
-    vecs = emb.encode(texts)
-    dim = vecs.shape[1]
-    index = faiss.IndexFlatIP(dim)
-    index.add(vecs)
-
-    faiss.write_index(index, INDEX_PATH)
     with open(DOCS_PATH, "wb") as f:
-        pickle.dump(docs, f)
+        pickle.dump(records, f)
 
-    print(f"Ingested {len(docs)} chunks → {INDEX_PATH}, {DOCS_PATH}")
+def save_sqlite(records: List[Dict]):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    conn = sqlite3.connect(SQLITE_PATH)
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS chunks (
+                id TEXT PRIMARY KEY,
+                relpath TEXT,
+                chunk_id INTEGER,
+                text TEXT
+            )
+        """)
+        cur.execute("DELETE FROM chunks")  # rebuild fully
+        cur.executemany(
+            "INSERT INTO chunks (id, relpath, chunk_id, text) VALUES (?, ?, ?, ?)",
+            [(r["id"], r["relpath"], r["chunk_id"], r["text"]) for r in records]
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
-# -------------------- Webhook helpers --------------------
-def rebuild_all():
-    """Full rebuild (used by startup or webhook)."""
-    main()
+def save_artifacts(index: faiss.Index, records: List[Dict]):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    faiss.write_index(index, INDEX_PATH)
+    save_pickle(records)
+    save_sqlite(records)
+    print(f"Ingested {len(records)} chunks →")
+    print(f"  - {INDEX_PATH}")
+    print(f"  - {DOCS_PATH}")
+    print(f"  - {SQLITE_PATH}")
 
-def incremental_update(added_or_modified: List[str], deleted: List[str]):
+# ---------- ingest pipeline (always GitHub) ----------
+
+def scan_and_chunk(root: str, target_size=800, overlap=100) -> Tuple[List[Dict], List[str]]:
     """
-    Simple incremental:
-      - If deletions exist OR large change set → full rebuild (IndexFlatIP can't delete).
-      - Else append new chunks for changed files.
-    Paths must be absolute.
+    Returns (records, raw_chunks)
+    record = {id, path, relpath, chunk_id, text}
     """
-    if deleted or len(added_or_modified) > 200:
-        print("Large change set or deletions detected → full rebuild.")
-        return rebuild_all()
+    records: List[Dict] = []
+    texts: List[str] = []
+    count = 0
+    files = list(iter_markdown_files(root))
+    if not files:
+        print("No markdown files found in snapshot.")
+        return [], []
 
-    if not (os.path.exists(INDEX_PATH) and os.path.exists(DOCS_PATH)):
-        print("No existing index/docs — running full rebuild.")
-        return rebuild_all()
+    print(f"Found {len(files)} markdown files under {root}")
+    for p in files[:25]:
+        print(" -", os.path.relpath(p, root))
 
-    index = faiss.read_index(INDEX_PATH)
-    with open(DOCS_PATH, "rb") as f:
-        docs = pickle.load(f)
-
-    emb = Embeddings()
-
-    new_texts, new_docs = [], []
-    doc_id = len(docs)
-
-    for path in added_or_modified:
-        if not os.path.isfile(path):
-            continue
-        _, ext = os.path.splitext(path)
-        if ext not in VALID_EXTS:
-            continue
+    for path in tqdm(files, desc="Scanning vault"):
+        rel = os.path.relpath(path, root)
         try:
-            raw = open(path, "r", encoding="utf-8").read()
-        except Exception:
-            continue
-        text = md_to_text(raw)
-        chunks = chunk_text(text, chunk_size=900, chunk_overlap=150)
-        for ch in chunks:
-            new_docs.append({"id": doc_id, "path": path, "chunk": ch})
-            new_texts.append(ch)
-            doc_id += 1
+            raw = read_text(path)
+            cleaned = clean_markdown(raw)
+            chunks = smart_chunk(cleaned, target_size=target_size, overlap=overlap)
+            for ci, ch in enumerate(chunks):
+                rid = f"{rel}::chunk{ci}"
+                records.append({
+                    "id": rid,
+                    "path": path,
+                    "relpath": rel,
+                    "chunk_id": ci,
+                    "text": ch
+                })
+                texts.append(ch)
+            count += len(chunks)
+        except Exception as e:
+            print(f"[warn] failed {rel}: {e}")
+    print(f"Created {count} chunks total")
+    return records, texts
 
-    if not new_texts:
-        print("No incremental chunks to add.")
+def main():
+    parser = argparse.ArgumentParser(
+        description="Build FAISS index from GitHub repo snapshot (never from local vault)."
+    )
+    parser.add_argument("--model", default="sentence-transformers/all-MiniLM-L6-v2")
+    parser.add_argument("--batch", type=int, default=64)
+    parser.add_argument("--target", type=int, default=800, help="Target chunk size in characters")
+    parser.add_argument("--overlap", type=int, default=100, help="Approx overlap in characters")
+    parser.add_argument("--force", action="store_true", help="Ignore existing ./data artifacts and rebuild.")
+    args = parser.parse_args()
+
+    # Ensure GitHub env is present — we *require* repo-based ingest
+    missing = [k for k in ("GITHUB_OWNER","GITHUB_REPO","GITHUB_REF","GITHUB_TOKEN") if not os.getenv(k)]
+    if missing:
+        sys.exit(f"Missing env vars: {', '.join(missing)}")
+
+    if (os.path.exists(INDEX_PATH) and os.path.exists(DOCS_PATH) and os.path.exists(SQLITE_PATH)
+        and not args.force):
+        print(f"Artifacts already exist at {DATA_DIR}. Use --force to rebuild.")
         return
 
-    vecs = emb.encode(new_texts)
-    index.add(vecs)
+    snapshot = fetch_repo_snapshot()  # creates a temp dir with repo contents
+    try:
+        # Walk, clean, chunk
+        records, texts = scan_and_chunk(snapshot, target_size=args.target, overlap=args.overlap)
+        if not records:
+            print("Nothing to index.")
+            return
 
-    faiss.write_index(index, INDEX_PATH)
-    with open(DOCS_PATH, "wb") as f:
-        pickle.dump(docs + new_docs, f)
+        # Embed
+        model = load_embedder(args.model)
+        embs = embed_texts(texts, model, batch_size=args.batch)
 
-    print(f"Incremental: +{len(new_docs)} chunks appended.")
+        # Build FAISS
+        index = build_faiss_index(embs)
 
-# -------------------- CLI --------------------
+        # Save
+        save_artifacts(index, records)
+    finally:
+        shutil.rmtree(snapshot, ignore_errors=True)
+        del snapshot
+        gc.collect()
+
 if __name__ == "__main__":
     main()
