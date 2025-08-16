@@ -1,0 +1,21 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.env
+.env.*
+.venv/
+node_modules/
+dist/
+build/
+.vscode/
+.idea/
+
+# project-specific
+data/
+vault/
+vault_repo/
+images/
