@@ -13,4 +13,4 @@ backend/data/
 
 frontend/node_modules/*
 frontend/.env
-frontend/.env.local.example
+frontend/.env.local.example/backend/data/
