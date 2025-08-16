@@ -2,8 +2,8 @@ import json
 import hashlib
 from typing import List, Dict, Any, Optional
 
-from llm_cerebras import cerebras_chat
-from memory import add_memory, recall_memories, add_task
+from llm_cerebras import cerebras_chat_with_model
+from memory import add_memory, recall_memories, add_task, upsert_entity, link_memory_to_entity, add_pending_memory
 from date_utils import parse_due_text_to_ts
 
 
@@ -96,7 +96,7 @@ def _hash_key(key: str) -> str:
 
 def extract_memories(user_id: str, user_msg: str, assistant_reply: str, recent_turns: Optional[List[Dict]] = None, top_snippets: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     messages = _build_prompt(user_msg, assistant_reply, recent_turns, top_snippets)
-    raw = cerebras_chat(messages, temperature=0.0, max_tokens=400)
+    raw = cerebras_chat_with_model(messages, model=None, temperature=0.0, max_tokens=400)
     data = _safe_json_parse(raw) or {"memories": []}
     out: List[Dict[str, Any]] = []
     for m in data.get("memories", []) or []:
@@ -113,6 +113,8 @@ def extract_memories(user_id: str, user_msg: str, assistant_reply: str, recent_t
         if mtype == "task" and not due_ts and due_text:
             due_ts = parse_due_text_to_ts(due_text)
         ck = _canonical_key(m)
+        # Optional entity extraction (names/projects) if present in JSON (extensible)
+        entities = m.get("entities") if isinstance(m.get("entities"), list) else []
         out.append({
             "type": mtype,
             "content": content,
@@ -124,6 +126,7 @@ def extract_memories(user_id: str, user_msg: str, assistant_reply: str, recent_t
             "canonical_key": ck,
             "key_hash": _hash_key(ck) if ck else None,
             "source": m.get("source") or "user",
+            "entities": entities,
         })
     return out
 
@@ -136,16 +139,23 @@ def store_extracted_memories(user_id: str, items: List[Dict[str, Any]]) -> int:
     for it in items:
         mtype = it["type"]
         content = it["content"]
-        if mtype == "task":
-            # Dedupe open tasks by content
-            # Simple approach: leave to DB-level uniqueness later; for now, insert if content not seen in recent memories
-            add_task(user_id, content, due_ts=it.get("due_ts"))
-            stored += 1
-        else:
-            if content in existing_contents:
-                continue
-            add_memory(user_id, content, mtype=mtype)
-            stored += 1
+        # Send into review queue for explicit approval to avoid unwanted autosaves
+        extra = None
+        try:
+            import json
+            extra = json.dumps({"entities": it.get("entities") or []})
+        except Exception:
+            pass
+        add_pending_memory(
+            user_id,
+            mtype,
+            content,
+            confidence=it.get("confidence"),
+            priority=it.get("priority"),
+            due_ts=it.get("due_ts"),
+            extra_json=extra,
+        )
+        stored += 1
     return stored
 
 

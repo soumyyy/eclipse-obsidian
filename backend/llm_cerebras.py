@@ -6,6 +6,7 @@ from cerebras.cloud.sdk import Cerebras
 _CLIENT: Cerebras | None = None
 
 MODEL = os.getenv("MODEL_NAME", "gpt-oss-120b")
+EXTRACTOR_MODEL = os.getenv("EXTRACTOR_MODEL", MODEL)
 
 def _client() -> Cerebras:
     global _CLIENT
@@ -51,3 +52,15 @@ def cerebras_chat_stream(messages: List[Dict], temperature: float = 0.3, max_tok
         text = getattr(delta, "content", "")
         if text:
             yield text
+
+def cerebras_chat_with_model(messages: List[Dict], model: Optional[str] = None, temperature: float = 0.0, max_tokens: int = 512) -> str:
+    client = _client()
+    resp = client.chat.completions.create(
+        model=(model or EXTRACTOR_MODEL),
+        messages=messages,
+        max_completion_tokens=max_tokens,
+        temperature=temperature,
+        top_p=1.0,
+        stream=False,
+    )
+    return resp.choices[0].message.content

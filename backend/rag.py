@@ -1,6 +1,7 @@
 # rag.py
 import os
 import pickle
+import sqlite3
 import numpy as np
 import faiss
 
@@ -112,12 +113,43 @@ class RAG:
         self.retriever = retriever
         self.embed_fn = embed_fn
         self.top_k = top_k
+        self._sqlite_path = os.path.join(DATA_DIR, "docs.sqlite")
 
     def retrieve(self, query: str):
         # returns only hits (list of {text, path, score, ...})
-        context, hits = self.retriever.build_context(query, k=self.top_k)
-        return hits
+        # Hybrid: light BM25 via SQLite FTS + dense search; then re-rank by combined score
+        dense_context, dense_hits = self.retriever.build_context(query, k=self.top_k * 4)
+        keyword_hits = []
+        try:
+            if os.path.exists(self._sqlite_path):
+                con = sqlite3.connect(self._sqlite_path)
+                cur = con.cursor()
+                cur.execute("SELECT id, relpath, text FROM chunks_fts WHERE chunks_fts MATCH ? LIMIT ?", (query, self.top_k * 6))
+                keyword_hits = [
+                    {"id": rid, "path": rel, "text": txt, "score": 0.0}
+                    for (rid, rel, txt) in cur.fetchall()
+                ]
+                con.close()
+        except Exception:
+            keyword_hits = []
+
+        # Combine and naive re-rank: prioritize dense scores; add keyword hits with slight boost if overlapping ids
+        by_id = {}
+        for h in dense_hits:
+            by_id[h.get("id") or h.get("path")] = {**h, "score_dense": h.get("score", 0.0), "score_kw": 0.0}
+        for h in keyword_hits:
+            key = h.get("id") or h.get("path")
+            if key in by_id:
+                by_id[key]["score_kw"] = by_id[key].get("score_kw", 0.0) + 0.1
+            else:
+                by_id[key] = {**h, "score_dense": 0.0, "score_kw": 0.1}
+
+        merged = list(by_id.values())
+        merged.sort(key=lambda x: (x.get("score_dense", 0.0) + x.get("score_kw", 0.0)), reverse=True)
+        return merged[: self.top_k]
 
     def build_context(self, query: str):
-        # returns (context_str, hits)
-        return self.retriever.build_context(query, k=self.top_k)
+        # returns (context_str, hits) using hybrid retrieval
+        hits = self.retrieve(query)
+        context = "\n\n".join(f"[{i+1}] {h['text']}" for i, h in enumerate(hits))
+        return context, hits

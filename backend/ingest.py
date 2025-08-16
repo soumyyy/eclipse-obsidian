@@ -164,11 +164,24 @@ def save_sqlite(records: List[Dict]):
                 text TEXT
             )
         """)
+        # FTS5 virtual table for keyword/BM25 search
+        try:
+            cur.execute("CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(id, relpath, text, content='')")
+        except Exception:
+            pass
         cur.execute("DELETE FROM chunks")  # rebuild fully
         cur.executemany(
             "INSERT INTO chunks (id, relpath, chunk_id, text) VALUES (?, ?, ?, ?)",
             [(r["id"], r["relpath"], r["chunk_id"], r["text"]) for r in records]
         )
+        try:
+            cur.execute("DELETE FROM chunks_fts")
+            cur.executemany(
+                "INSERT INTO chunks_fts (id, relpath, text) VALUES (?, ?, ?)",
+                [(r["id"], r["relpath"], r["text"]) for r in records]
+            )
+        except Exception:
+            pass
         conn.commit()
     finally:
         conn.close()

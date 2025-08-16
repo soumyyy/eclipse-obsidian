@@ -4,6 +4,7 @@ import Message from "@/components/Message";
 import TypingBeam from "@/components/TypingBeam";
 import Sound from "@/components/Sound";
 import HUD from "@/components/HUD";
+import ReviewDrawer from "@/components/ReviewDrawer";
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -54,19 +55,42 @@ export default function Home() {
     setInput("");
     setLoading(true);
     try {
-      const resp = await fetch("/api/chat", {
+      const resp = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user_id: "soumya", message: userMsg.content }),
       });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data?.error || "Server error");
-      const assistant: ChatMessage = {
-        role: "assistant",
-        content: data.reply || "",
-        sources: data.sources || [],
-      };
-      setMessages((m) => [...m, assistant]);
+      if (!resp.ok || !resp.body) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error((data as any)?.error || "Server error");
+      }
+      // Insert a live assistant placeholder for streaming updates
+      setMessages((m) => [...m, { role: "assistant", content: "" }]);
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let acc = "";
+      let assistantContent = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        acc += decoder.decode(value, { stream: true });
+        const parts = acc.split("\n\n");
+        acc = parts.pop() || "";
+        for (const p of parts) {
+          if (!p.startsWith("data: ")) continue;
+          const chunk = p.slice(6);
+          if (chunk === "[DONE]") {
+            continue;
+          }
+          assistantContent += chunk;
+          // live token rendering
+          setMessages((m) => {
+            const out = [...m];
+            if (out[out.length - 1]?.role === "assistant") out[out.length - 1] = { role: "assistant", content: assistantContent } as ChatMessage;
+            return out;
+          });
+        }
+      }
     } catch (err: any) {
       setMessages((m) => [...m, { role: "assistant", content: `Error: ${err?.message || err}` }]);
     } finally {
@@ -138,6 +162,7 @@ export default function Home() {
           </button>
         </div>
       </form>
+      <ReviewDrawer userId="soumya" />
       <Sound play={messages[messages.length - 1]?.role === "assistant"} />
     </div>
   );

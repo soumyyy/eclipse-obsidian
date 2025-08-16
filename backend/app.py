@@ -8,6 +8,7 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 from typing import List, Dict, Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request, Depends, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
@@ -15,7 +16,7 @@ from pydantic import BaseModel
 from rag import RAG, make_faiss_retriever                      # our retriever class
 from ingest import ingest_from_dir   # ingest pipeline that builds FAISS/docs from a dir
 from github_fetch import fetch_repo_snapshot
-from memory import ensure_db, recall_memories, add_memory, add_task, list_tasks, complete_task, add_fact, add_summary
+from memory import ensure_db, recall_memories, add_memory, add_task, list_tasks, complete_task, add_fact, add_summary, list_pending_memories, approve_pending_memory, reject_pending_memory
 from llm_cerebras import cerebras_chat   # Cerebras chat wrapper
 from memory_extractor import extract_and_store_memories
 
@@ -71,13 +72,22 @@ def require_api_key(x_api_key: Optional[str] = Header(default=None)):
 SYSTEM_PROMPT = f"""You are {ASSISTANT}, a helpful personal assistant.
 Use the provided CONTEXT and MEMORIES to answer accurately and concisely.
 Cite snippets using [1], [2], etc. If unsure, say so and suggest next steps.
+Format answers in clear Markdown:
+- Use headings for sections
+- Use bullet lists with one item per line
+- Insert line breaks between sections and lists
+- Use code fences for code blocks
+- Avoid emojis unless asked
+- Talk like Jarvis from Iron man, and keep your responses short and concise.
 """
 
 def build_messages(user_id: str, user_msg: str, context: str, memories_text: str):
+    history = _get_history(user_id)
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "system", "content": f"MEMORIES:\n{memories_text or '(none)'}"},
         {"role": "system", "content": f"CONTEXT:\n{context or '(no retrieval hits)'}"},
+        *history,
         {"role": "user", "content": user_msg},
     ]
 
@@ -95,6 +105,20 @@ def get_retriever():
         )
         _rag = RAG(retriever=retr, embed_fn=embed_fn, top_k=5)
     return _rag
+
+# ----------------- In-memory session history -----------------
+# NOTE: For production, replace with Redis or a DB-backed store.
+SESSION_HISTORY: Dict[str, List[Dict[str, str]]] = {}
+
+def _get_history(user_id: str) -> List[Dict[str, str]]:
+    return SESSION_HISTORY.setdefault(user_id, [])
+
+def _append_history(user_id: str, role: str, content: str, max_turns: int = 10) -> None:
+    hist = _get_history(user_id)
+    hist.append({"role": role, "content": content})
+    # keep only last N turns
+    if len(hist) > max_turns:
+        del hist[:-max_turns]
 
 # ----------------- GitHub webhook signature -----------------
 def _verify_github_sig(secret: str, payload: bytes, signature: Optional[str]) -> bool:
@@ -231,6 +255,8 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
     # Build messages and call LLM
     messages = build_messages(payload.user_id, payload.message, context, memories_text)
     reply = cerebras_chat(messages)
+    _append_history(payload.user_id, "user", payload.message)
+    _append_history(payload.user_id, "assistant", reply)
 
     # Optional: store a quick memory
     if payload.make_note:
@@ -251,6 +277,44 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
         tools_used=[],
     )
 
+# ----------------- Chat (streaming SSE) -----------------
+@app.post("/chat/stream")
+def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_api_key)):
+    if not payload.message.strip():
+        raise HTTPException(400, "message required")
+
+    try:
+        retriever = get_retriever()
+        context, hits = retriever.build_context(payload.message)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Retriever not ready: {e}. Run `python ingest.py`.") from e
+
+    mems = recall_memories(payload.user_id, limit=6)
+    memories_text = "\n".join(str(m) for m in (mems or []))
+    messages = build_messages(payload.user_id, payload.message, context, memories_text)
+
+    from llm_cerebras import cerebras_chat_stream
+
+    def event_gen():
+        buffer = []
+        try:
+            for chunk in cerebras_chat_stream(messages, temperature=0.3, max_tokens=800):
+                if chunk:
+                    buffer.append(chunk)
+                    yield f"data: {chunk}\n\n"
+        finally:
+            full = "".join(buffer)
+            _append_history(payload.user_id, "user", payload.message)
+            _append_history(payload.user_id, "assistant", full)
+            if os.getenv("AUTO_MEMORY", "true").lower() in ("1","true","yes"):
+                try:
+                    background_tasks.add_task(extract_and_store_memories, payload.user_id, payload.message, full, hits)
+                except Exception:
+                    pass
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
+
 # ----------------- Tasks endpoints -----------------
 
 class TaskIn(BaseModel):
@@ -270,4 +334,23 @@ def get_tasks(user_id: str, status: Optional[str] = "open", limit: int = 100):
 @app.post("/tasks/{task_id}/complete", dependencies=[Depends(require_api_key)])
 def finish_task(task_id: int, user_id: str):
     ok = complete_task(user_id, task_id)
+    return {"ok": ok}
+
+# ----------------- Review queue endpoints -----------------
+
+@app.get("/memories/pending", dependencies=[Depends(require_api_key)])
+def get_pending(user_id: str, limit: int = 50):
+    return {"ok": True, "items": list_pending_memories(user_id, limit=limit)}
+
+class ReviewIn(BaseModel):
+    user_id: str
+
+@app.post("/memories/pending/{pid}/approve", dependencies=[Depends(require_api_key)])
+def approve(pid: int, payload: ReviewIn):
+    ok = approve_pending_memory(payload.user_id, pid)
+    return {"ok": ok}
+
+@app.post("/memories/pending/{pid}/reject", dependencies=[Depends(require_api_key)])
+def reject(pid: int, payload: ReviewIn):
+    ok = reject_pending_memory(payload.user_id, pid)
     return {"ok": ok}

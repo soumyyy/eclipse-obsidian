@@ -25,6 +25,39 @@ CREATE TABLE IF NOT EXISTS tasks (
   status     TEXT NOT NULL DEFAULT 'open'
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_user_due ON tasks(user_id, due_ts);
+
+-- Entities & links (compounding memory)
+CREATE TABLE IF NOT EXISTS entities (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id   TEXT NOT NULL,
+  kind      TEXT NOT NULL, -- person|project|preference|organization|location
+  name      TEXT NOT NULL,
+  canonical TEXT,
+  extra     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_entities_user_kind ON entities(user_id, kind);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_entity_user_canonical ON entities(user_id, canonical);
+
+CREATE TABLE IF NOT EXISTS memory_entity (
+  mem_id   INTEGER NOT NULL,
+  ent_id   INTEGER NOT NULL,
+  PRIMARY KEY(mem_id, ent_id)
+);
+
+-- Pending memories (review queue)
+CREATE TABLE IF NOT EXISTS pending_memories (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    TEXT NOT NULL,
+  ts         INTEGER NOT NULL,
+  type       TEXT NOT NULL,
+  content    TEXT NOT NULL,
+  status     TEXT NOT NULL DEFAULT 'pending', -- pending|approved|rejected
+  confidence REAL,
+  priority   INTEGER,
+  due_ts     INTEGER,
+  extra      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pending_user_ts ON pending_memories(user_id, ts DESC);
 """
 
 def ensure_db(path: str = DB_PATH) -> None:
@@ -145,6 +178,118 @@ def delete_task(user_id: str, task_id: int) -> bool:
     try:
         cur = con.cursor()
         cur.execute("DELETE FROM tasks WHERE user_id=? AND id=?", (user_id, task_id))
+        con.commit()
+        return cur.rowcount > 0
+    finally:
+        con.close()
+
+# ---- entities API ----
+
+def upsert_entity(user_id: str, kind: str, name: str, canonical: Optional[str] = None, extra: Optional[str] = None) -> int:
+    canonical = (canonical or name or "").strip().lower()
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cur = con.cursor()
+        cur.execute(
+            "SELECT id FROM entities WHERE user_id=? AND canonical=?",
+            (user_id, canonical),
+        )
+        row = cur.fetchone()
+        if row:
+            return int(row[0])
+        cur.execute(
+            "INSERT INTO entities(user_id, kind, name, canonical, extra) VALUES(?,?,?,?,?)",
+            (user_id, kind, name, canonical, extra),
+        )
+        con.commit()
+        return int(cur.lastrowid)
+    finally:
+        con.close()
+
+def link_memory_to_entity(mem_id: int, ent_id: int) -> None:
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cur = con.cursor()
+        cur.execute(
+            "INSERT OR IGNORE INTO memory_entity(mem_id, ent_id) VALUES(?,?)",
+            (mem_id, ent_id),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+# ---- pending memories (review queue) ----
+
+def add_pending_memory(user_id: str, mtype: str, content: str, confidence: float | None = None, priority: int | None = None, due_ts: int | None = None, extra_json: str | None = None) -> int:
+    ts = int(time.time())
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cur = con.cursor()
+        cur.execute(
+            "INSERT INTO pending_memories(user_id, ts, type, content, status, confidence, priority, due_ts, extra) VALUES(?,?,?,?,?,?,?,?,?)",
+            (user_id, ts, mtype, content, "pending", confidence, priority, due_ts, extra_json),
+        )
+        con.commit()
+        return int(cur.lastrowid)
+    finally:
+        con.close()
+
+def list_pending_memories(user_id: str, limit: int = 100):
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cur = con.cursor()
+        cur.execute(
+            "SELECT id, ts, type, content, status, confidence, priority, due_ts, extra FROM pending_memories WHERE user_id=? AND status='pending' ORDER BY ts DESC LIMIT ?",
+            (user_id, limit),
+        )
+        rows = cur.fetchall()
+        return [
+            {"id": r[0], "ts": r[1], "type": r[2], "content": r[3], "status": r[4], "confidence": r[5], "priority": r[6], "due_ts": r[7], "extra": r[8]}
+            for r in rows
+        ]
+    finally:
+        con.close()
+
+def approve_pending_memory(user_id: str, pending_id: int) -> bool:
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cur = con.cursor()
+        cur.execute("SELECT type, content, confidence, priority, due_ts, extra FROM pending_memories WHERE id=? AND user_id=? AND status='pending'", (pending_id, user_id))
+        row = cur.fetchone()
+        if not row:
+            return False
+        mtype, content, confidence, priority, due_ts, extra = row
+        # Insert into final stores
+        if mtype == "task":
+            add_task(user_id, content, due_ts=due_ts)
+        else:
+            mem_id = add_memory(user_id, content, mtype=mtype)
+            # Link entities if provided in extra JSON
+            if extra:
+                try:
+                    import json
+                    data = json.loads(extra)
+                    ents = data.get("entities") or []
+                    for ent in ents:
+                        kind = (ent.get("kind") or "").strip() or "entity"
+                        name = ent.get("name") or ""
+                        if not name:
+                            continue
+                        ent_id = upsert_entity(user_id, kind=kind, name=name)
+                        link_memory_to_entity(mem_id, ent_id)
+                except Exception:
+                    pass
+        cur.execute("UPDATE pending_memories SET status='approved' WHERE id=?", (pending_id,))
+        con.commit()
+        return True
+    finally:
+        con.close()
+
+def reject_pending_memory(user_id: str, pending_id: int) -> bool:
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cur = con.cursor()
+        cur.execute("UPDATE pending_memories SET status='rejected' WHERE id=? AND user_id=? AND status='pending'", (pending_id, user_id))
         con.commit()
         return cur.rowcount > 0
     finally:
