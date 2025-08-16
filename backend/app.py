@@ -7,15 +7,17 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 from typing import List, Dict, Optional
 
-from fastapi import FastAPI, Header, HTTPException, Request, Depends
+from fastapi import FastAPI, Header, HTTPException, Request, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 
 from rag import RAG, make_faiss_retriever                      # our retriever class
-from ingest import main as ingest_main   # ingest pipeline that builds FAISS/docs from a dir
+from ingest import ingest_from_dir   # ingest pipeline that builds FAISS/docs from a dir
 from github_fetch import fetch_repo_snapshot
-from memory import ensure_db, recall_memories, add_memory
+from memory import ensure_db, recall_memories, add_memory, add_task, list_tasks, complete_task, add_fact, add_summary
 from llm_cerebras import cerebras_chat   # Cerebras chat wrapper
+from memory_extractor import extract_and_store_memories
 
 # ----------------- Config -----------------
 ASSISTANT      = os.getenv("ASSISTANT_NAME", "Atlas")
@@ -40,12 +42,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Compression
+app.add_middleware(GZipMiddleware, minimum_size=512)
+
 # ----------------- Models -----------------
 class ChatIn(BaseModel):
     user_id: str = "local"
     message: str
     make_note: Optional[str] = None
     use_web: bool = False  # reserved, not used here
+    save_fact: Optional[str] = None   # explicit fact content
+    save_task: Optional[str] = None   # explicit task content
 
 class ChatOut(BaseModel):
     reply: str
@@ -103,19 +110,20 @@ def bootstrap():
         os.makedirs(DATA_DIR, exist_ok=True)
         ensure_db()  # create ./data/memory.sqlite and tables if needed
 
-        use_github = all(os.getenv(k) for k in ("GITHUB_OWNER","GITHUB_REPO","GITHUB_REF","GITHUB_TOKEN"))
+        ref = os.getenv("GITHUB_REF") or os.getenv("GITHUB_BRANCH")
+        use_github = all(os.getenv(k) for k in ("GITHUB_OWNER","GITHUB_REPO","GITHUB_TOKEN")) and bool(ref)
         index_exists = os.path.exists(INDEX_FAISS) and os.path.exists(DOCS_PKL)
 
         if not index_exists:
             if use_github:
                 tmp = fetch_repo_snapshot()
                 try:
-                    ingest_main(vault_dir=tmp)     # Build from GitHub snapshot
+                    ingest_from_dir(tmp)
                 finally:
                     shutil.rmtree(tmp, ignore_errors=True)
             else:
                 # Fallback: build from local vault directory if provided
-                ingest_main(vault_dir="./vault")
+                ingest_from_dir("./vault")
 
         # Warm retriever (loads FAISS + docs)
         _ = get_retriever()
@@ -144,13 +152,13 @@ def admin_reindex(x_api_key: Optional[str] = Header(default=None)):
 
     tmp = fetch_repo_snapshot()
     try:
-        ingest_main(vault_dir=tmp)
+        ingest_from_dir(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
     # refresh retriever
-    global _retriever
-    _retriever = None
+    global _rag
+    _rag = None
     _ = get_retriever()
 
     return {"status": "ok", "source": "github_zip", "note": "index rebuilt from repo"}
@@ -166,25 +174,25 @@ async def github_webhook(request: Request):
         raise HTTPException(401, "Invalid signature")
 
     event = await request.json()
-    branch = os.getenv("GITHUB_BRANCH") or os.getenv("GITHUB_REF", "main")
+    branch = os.getenv("GITHUB_REF") or os.getenv("GITHUB_BRANCH") or "main"
     if event.get("ref", "").split("/")[-1] != branch:
         return {"status": "ignored", "reason": event.get("ref")}
 
     tmp = fetch_repo_snapshot()
     try:
-        ingest_main(vault_dir=tmp)
+        ingest_from_dir(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
-    global _retriever
-    _retriever = None
+    global _rag
+    _rag = None
     _ = get_retriever()
 
     return {"status": "ok", "mode": "zip_rebuild"}
 
 # ----------------- Chat -----------------
 @app.post("/chat", response_model=ChatOut)
-def chat(payload: ChatIn, _=Depends(require_api_key)):
+def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_api_key)):
     if not payload.message.strip():
         raise HTTPException(400, "message required")
 
@@ -228,8 +236,38 @@ def chat(payload: ChatIn, _=Depends(require_api_key)):
     if payload.make_note:
         add_memory(payload.user_id, payload.make_note, payload.message)
 
+    if payload.save_fact:
+        add_fact(payload.user_id, payload.save_fact)
+    if payload.save_task:
+        add_task(payload.user_id, payload.save_task)
+
+    # Background memory extraction (feature-flagged)
+    if os.getenv("AUTO_MEMORY", "true").lower() in ("1","true","yes"):
+        background_tasks.add_task(extract_and_store_memories, payload.user_id, payload.message, reply, hits)
+
     return ChatOut(
         reply=reply,
         sources=[{"path": h["path"], "score": h["score"]} for h in hits],
         tools_used=[],
     )
+
+# ----------------- Tasks endpoints -----------------
+
+class TaskIn(BaseModel):
+    user_id: str
+    content: str
+    due_ts: Optional[int] = None
+
+@app.post("/tasks", dependencies=[Depends(require_api_key)])
+def create_task(payload: TaskIn):
+    tid = add_task(payload.user_id, payload.content, payload.due_ts)
+    return {"ok": True, "id": tid}
+
+@app.get("/tasks", dependencies=[Depends(require_api_key)])
+def get_tasks(user_id: str, status: Optional[str] = "open", limit: int = 100):
+    return {"ok": True, "tasks": list_tasks(user_id, status=status, limit=limit)}
+
+@app.post("/tasks/{task_id}/complete", dependencies=[Depends(require_api_key)])
+def finish_task(task_id: int, user_id: str):
+    ok = complete_task(user_id, task_id)
+    return {"ok": ok}

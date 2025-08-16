@@ -13,4 +13,10 @@ backend/data/
 
 frontend/node_modules/*
 frontend/.env
-frontend/.env.local.example/backend/data/
+frontend/.env.local.example
+frontend/.env.local
+frontend/.next/
+frontend/.next
+frontend/node_modules
+frontend/out
+frontend/.DS_Store

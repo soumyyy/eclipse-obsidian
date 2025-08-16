@@ -3,7 +3,7 @@ import os, requests, datetime as dt
 VAULT = os.getenv("OBSIDIAN_VAULT", "./vault")
 
 def web_search_ddg(q: str, max_results: int = 5):
-    url = "https://duckduckgo.com/?q={}&format=json&no_html=1&no_redirect=1".format(
+    url = "https://api.duckduckgo.com/?q={}&format=json&no_html=1&no_redirect=1".format(
         requests.utils.quote(q)
     )
     r = requests.get(url, timeout=15)

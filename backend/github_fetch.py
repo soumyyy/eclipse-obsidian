@@ -3,7 +3,7 @@ import os, tempfile, zipfile, io, shutil, requests
 
 OWNER = os.getenv("GITHUB_OWNER")
 REPO  = os.getenv("GITHUB_REPO")
-REF   = os.getenv("GITHUB_BRANCH", "main")
+REF   = os.getenv("GITHUB_REF") or os.getenv("GITHUB_BRANCH") or "main"
 TOKEN = os.getenv("GITHUB_TOKEN")
 
 def fetch_repo_snapshot() -> str:
@@ -12,7 +12,7 @@ def fetch_repo_snapshot() -> str:
     Caller must remove it when done.
     """
     if not (OWNER and REPO and REF and TOKEN):
-        raise RuntimeError("Set GITHUB_OWNER, GITHUB_REPO, GITHUB_BRANCH, GITHUB_TOKEN in .env")
+        raise RuntimeError("Set GITHUB_OWNER, GITHUB_REPO, GITHUB_REF (or GITHUB_BRANCH), and GITHUB_TOKEN in .env")
     url = f"https://api.github.com/repos/{OWNER}/{REPO}/zipball/{REF}"
     headers = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github+json"}
     r = requests.get(url, headers=headers, timeout=120)

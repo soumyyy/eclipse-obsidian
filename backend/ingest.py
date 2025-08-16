@@ -1,6 +1,6 @@
 # ingest.py
 # Always fetches the Obsidian vault from GitHub (ZIP snapshot) and (re)builds FAISS.
-# Requires env: GITHUB_OWNER, GITHUB_REPO, GITHUB_REF, GITHUB_TOKEN
+# Requires env: GITHUB_OWNER, GITHUB_REPO, GITHUB_TOKEN, and GITHUB_REF (or GITHUB_BRANCH)
 import os
 import re
 import gc
@@ -183,7 +183,24 @@ def save_artifacts(index: faiss.Index, records: List[Dict]):
     print(f"  - {DOCS_PATH}")
     print(f"  - {SQLITE_PATH}")
 
-# ---------- ingest pipeline (always GitHub) ----------
+# ---------- ingest helpers ----------
+
+def ingest_from_dir(root: str, model_name: str = "sentence-transformers/all-MiniLM-L6-v2", batch: int = 64, target: int = 800, overlap: int = 100):
+    """
+    Build FAISS artifacts from a local directory containing Markdown files.
+    Used by the web app to ingest either a GitHub snapshot (already extracted)
+    or a local vault path.
+    """
+    records, texts = scan_and_chunk(root, target_size=target, overlap=overlap)
+    if not records:
+        print("Nothing to index.")
+        return
+    model = load_embedder(model_name)
+    embs = embed_texts(texts, model, batch_size=batch)
+    index = build_faiss_index(embs)
+    save_artifacts(index, records)
+
+# ---------- ingest pipeline (CLI: always GitHub) ----------
 
 def scan_and_chunk(root: str, target_size=800, overlap=100) -> Tuple[List[Dict], List[str]]:
     """
@@ -235,10 +252,12 @@ def main():
     parser.add_argument("--force", action="store_true", help="Ignore existing ./data artifacts and rebuild.")
     args = parser.parse_args()
 
-    # Ensure GitHub env is present — we *require* repo-based ingest
-    missing = [k for k in ("GITHUB_OWNER","GITHUB_REPO","GITHUB_REF","GITHUB_TOKEN") if not os.getenv(k)]
-    if missing:
-        sys.exit(f"Missing env vars: {', '.join(missing)}")
+    # Ensure GitHub env is present — we *require* repo-based ingest for CLI
+    missing_core = [k for k in ("GITHUB_OWNER","GITHUB_REPO","GITHUB_TOKEN") if not os.getenv(k)]
+    ref = os.getenv("GITHUB_REF") or os.getenv("GITHUB_BRANCH")
+    if missing_core or not ref:
+        extra = [] if ref else ["GITHUB_REF or GITHUB_BRANCH"]
+        sys.exit(f"Missing env vars: {', '.join(missing_core + extra)}")
 
     if (os.path.exists(INDEX_PATH) and os.path.exists(DOCS_PATH) and os.path.exists(SQLITE_PATH)
         and not args.force):

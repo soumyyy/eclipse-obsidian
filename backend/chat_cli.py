@@ -21,7 +21,6 @@ def ask(msg: str):
         "user_id": USER_ID,
         "message": msg,
         "use_web": False,       # toggle if you built web search
-        "top_k": 6,
     }
     r = requests.post(f"{BACKEND_URL}/chat", headers=headers, data=json.dumps(payload), timeout=120)
     r.raise_for_status()

@@ -3,13 +3,19 @@ import os
 from typing import List, Dict, Iterable, Optional
 from cerebras.cloud.sdk import Cerebras
 
+_CLIENT: Cerebras | None = None
+
 MODEL = os.getenv("MODEL_NAME", "gpt-oss-120b")
 
 def _client() -> Cerebras:
+    global _CLIENT
+    if _CLIENT is not None:
+        return _CLIENT
     api_key = os.environ.get("CEREBRAS_API_KEY")
     if not api_key:
         raise RuntimeError("Set CEREBRAS_API_KEY in your .env")
-    return Cerebras(api_key=api_key)
+    _CLIENT = Cerebras(api_key=api_key)
+    return _CLIENT
 
 def cerebras_chat(messages: List[Dict], temperature: float = 0.3, max_tokens: int = 800) -> str:
     """
