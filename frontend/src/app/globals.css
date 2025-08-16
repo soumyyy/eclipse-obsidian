@@ -31,3 +31,9 @@ body {
 .prose ol { list-style: decimal; padding-left: 1.25rem; }
 .prose code { background: rgba(0,0,0,0.05); padding: 2px 4px; border-radius: 4px; }
 .prose pre { background: #0a0a0a; color: white; padding: 12px; border-radius: 8px; overflow: auto; }
+
+/* Scrollbar styling */
+*::-webkit-scrollbar { width: 10px; }
+*::-webkit-scrollbar-track { background: rgba(255,255,255,0.03); }
+*::-webkit-scrollbar-thumb { background-color: rgba(255,255,255,0.15); border-radius: 10px; border: 2px solid rgba(0,0,0,0); background-clip: padding-box; }
+* { scrollbar-color: rgba(255,255,255,0.15) transparent; scrollbar-width: thin; }

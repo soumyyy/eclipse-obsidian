@@ -5,7 +5,7 @@ uvicorn[standard]==0.30.3
 
 python-dotenv
 faiss-cpu
-fastembed==0.3.3
+fastembed
 markdown
 beautifulsoup4
 requests
