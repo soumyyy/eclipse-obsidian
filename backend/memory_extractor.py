@@ -1,4 +1,5 @@
 import json
+import os
 import hashlib
 from typing import List, Dict, Any, Optional
 
@@ -106,8 +107,6 @@ def extract_memories(user_id: str, user_msg: str, assistant_reply: str, recent_t
             continue
         confidence = float(m.get("confidence", 0.0) or 0.0)
         priority = int(m.get("priority", 3) or 3)
-        if confidence < 0.6 or priority > 2:
-            continue
         due_text = m.get("due_text")
         due_ts = m.get("due_ts")
         if mtype == "task" and not due_ts and due_text:
@@ -128,21 +127,105 @@ def extract_memories(user_id: str, user_msg: str, assistant_reply: str, recent_t
             "source": m.get("source") or "user",
             "entities": entities,
         })
+    # If nothing extracted, try a focused single-turn fallback pass (no regex)
+    if not out:
+        try:
+            schema = (
+                '{ "memories": [ { "type": "fact|preference|task|summary|contact|link", '
+                '"content": "", "confidence": 0.0, "priority": 2, "due_text": null, "due_ts": null, "source": "user" } ] }'
+            )
+            sys2 = "\n".join([
+                "Extract exactly one memory-worthy item from the USER message if present, else return {\"memories\":[]}.",
+                "User statements about themselves (facts/preferences/tasks) should be captured.",
+                "Return STRICT JSON only, matching the schema. No prose.",
+                f"Schema: {schema}",
+            ])
+            messages2 = [
+                {"role": "system", "content": sys2},
+                {"role": "user", "content": f"USER: {user_msg}"},
+            ]
+            raw2 = cerebras_chat_with_model(messages2, model=os.getenv("EXTRACTOR_FALLBACK_MODEL") or None, temperature=0.0, max_tokens=300)
+            data2 = _safe_json_parse(raw2) or {"memories": []}
+            for m in data2.get("memories", []) or []:
+                mtype = _normalize_type(m.get("type", "").strip())
+                content = (m.get("content") or "").strip()
+                if not mtype or not content:
+                    continue
+                confidence = float(m.get("confidence", 0.0) or 0.0)
+                priority = int(m.get("priority", 2) or 2)
+                due_text = m.get("due_text")
+                due_ts = m.get("due_ts")
+                if mtype == "task" and not due_ts and due_text:
+                    due_ts = parse_due_text_to_ts(due_text)
+                out.append({
+                    "type": mtype,
+                    "content": content,
+                    "confidence": confidence,
+                    "priority": priority,
+                    "ttl_days": None,
+                    "due_text": due_text,
+                    "due_ts": due_ts,
+                    "canonical_key": None,
+                    "key_hash": None,
+                    "source": "user",
+                    "entities": [],
+                })
+        except Exception as e:
+            try:
+                if os.getenv("AUTO_MEMORY_DEBUG", "false").strip().lower() in ("1","true","yes"):
+                    print(f"[memory_extractor] fallback LLM extract failed: {e}")
+            except Exception:
+                pass
     return out
 
 
 def store_extracted_memories(user_id: str, items: List[Dict[str, Any]]) -> int:
-    # Dedupe by exact content within recent window
+    # Mode: 'review' (default), 'auto' (save everything), 'hybrid' (auto-save facts/tasks/preferences)
+    mode = (os.getenv("AUTO_MEMORY_MODE") or "review").strip().lower()
+    min_conf = float(os.getenv("AUTO_MEMORY_MIN_CONF", "0.4"))
     recent = recall_memories(user_id, limit=200)
     existing_contents = {r[3] if isinstance(r, (list, tuple)) else (r.get("content") if isinstance(r, dict) else str(r)) for r in (recent or [])}
     stored = 0
     for it in items:
         mtype = it["type"]
         content = it["content"]
-        # Send into review queue for explicit approval to avoid unwanted autosaves
+        confidence = float(it.get("confidence") or 0.0)
+        priority = int(it.get("priority") or 3)
+        source = (it.get("source") or "user").strip().lower()
+
+        should_auto = False
+        if mode == "auto":
+            should_auto = True
+        elif mode == "hybrid":
+            # Always auto-save core personal data and preferences from the user; tasks always auto
+            if mtype == "task":
+                should_auto = True
+            elif mtype in ("fact", "preference") and source == "user":
+                should_auto = True
+
+        # If not explicitly allowed above, fall back to thresholds
+        if should_auto or (confidence >= min_conf and priority <= 2):
+            if mtype == "task":
+                add_task(user_id, content, due_ts=it.get("due_ts"))
+            else:
+                if content not in existing_contents:
+                    mem_id = add_memory(user_id, content, mtype=mtype)
+                    # Link entities if present
+                    for ent in (it.get("entities") or []):
+                        try:
+                            kind = (ent.get("kind") or "").strip() or "entity"
+                            name = ent.get("name") or ""
+                            if name:
+                                eid = upsert_entity(user_id, kind, name)
+                                link_memory_to_entity(mem_id, eid)
+                        except Exception:
+                            pass
+            stored += 1
+            continue
+
+        # Otherwise, queue for review
         extra = None
         try:
-            import json
             extra = json.dumps({"entities": it.get("entities") or []})
         except Exception:
             pass
@@ -150,8 +233,8 @@ def store_extracted_memories(user_id: str, items: List[Dict[str, Any]]) -> int:
             user_id,
             mtype,
             content,
-            confidence=it.get("confidence"),
-            priority=it.get("priority"),
+            confidence=confidence,
+            priority=priority,
             due_ts=it.get("due_ts"),
             extra_json=extra,
         )
@@ -168,6 +251,12 @@ def extract_and_store_memories(user_id: str, user_msg: str, assistant_reply: str
             if txt:
                 snippets.append(txt[:400])
     items = extract_memories(user_id, user_msg, assistant_reply, recent_turns=None, top_snippets=snippets)
+    # Optional debug log
+    if os.getenv("AUTO_MEMORY_DEBUG", "false").strip().lower() in ("1", "true", "yes"):
+        try:
+            print(f"[memory_extractor] extracted {len(items)} items for user={user_id}")
+        except Exception:
+            pass
     store_extracted_memories(user_id, items)
 
 

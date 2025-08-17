@@ -115,6 +115,64 @@ def recall_memories(user_id: str, limit: int = 20, contains: Optional[str] = Non
     finally:
         con.close()
 
+def list_memories(user_id: str, limit: int = 100, mtype: Optional[str] = None, contains: Optional[str] = None):
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cur = con.cursor()
+        base = "SELECT id, ts, type, content FROM memories WHERE user_id=?"
+        params = [user_id]
+        if mtype:
+            base += " AND type=?"; params.append(mtype)
+        if contains:
+            base += " AND content LIKE ?"; params.append(f"%{contains}%")
+        base += " ORDER BY ts DESC LIMIT ?"; params.append(limit)
+        cur.execute(base, tuple(params))
+        rows = cur.fetchall()
+        return [{"id": r[0], "ts": r[1], "type": r[2], "content": r[3]} for r in rows]
+    finally:
+        con.close()
+
+def update_memory(user_id: str, mem_id: int, content: Optional[str] = None, mtype: Optional[str] = None) -> bool:
+    if not content and not mtype:
+        return False
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cur = con.cursor()
+        cur.execute("SELECT 1 FROM memories WHERE id=? AND user_id=?", (mem_id, user_id))
+        if not cur.fetchone():
+            return False
+        if content and mtype:
+            cur.execute("UPDATE memories SET content=?, type=? WHERE id=? AND user_id=?", (content, mtype, mem_id, user_id))
+        elif content:
+            cur.execute("UPDATE memories SET content=? WHERE id=? AND user_id=?", (content, mem_id, user_id))
+        else:
+            cur.execute("UPDATE memories SET type=? WHERE id=? AND user_id=?", (mtype, mem_id, user_id))
+        con.commit()
+        # Consider success even if values didn't change (rowcount may be 0)
+        return True
+    finally:
+        con.close()
+
+def delete_memory(user_id: str, mem_id: int) -> bool:
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cur = con.cursor()
+        cur.execute("DELETE FROM memories WHERE id=? AND user_id=?", (mem_id, user_id))
+        con.commit()
+        return cur.rowcount > 0
+    finally:
+        con.close()
+
+def delete_all_memories(user_id: str) -> int:
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cur = con.cursor()
+        cur.execute("DELETE FROM memories WHERE user_id=?", (user_id,))
+        con.commit()
+        return cur.rowcount
+    finally:
+        con.close()
+
 # ---- convenience helpers for specific memory types ----
 
 def add_fact(user_id: str, content: str) -> int:

@@ -16,9 +16,11 @@ from pydantic import BaseModel
 from rag import RAG, make_faiss_retriever                      # our retriever class
 from ingest import ingest_from_dir   # ingest pipeline that builds FAISS/docs from a dir
 from github_fetch import fetch_repo_snapshot
-from memory import ensure_db, recall_memories, add_memory, add_task, list_tasks, complete_task, add_fact, add_summary, list_pending_memories, approve_pending_memory, reject_pending_memory
+from memory import ensure_db, recall_memories, add_memory, add_task, list_tasks, complete_task, add_fact, add_summary, list_pending_memories, approve_pending_memory, reject_pending_memory, list_memories, update_memory, delete_memory, delete_all_memories
 from llm_cerebras import cerebras_chat   # Cerebras chat wrapper
 from memory_extractor import extract_and_store_memories
+from bs4 import BeautifulSoup
+import requests
 
 # ----------------- Config -----------------
 ASSISTANT      = os.getenv("ASSISTANT_NAME", "Atlas")
@@ -260,7 +262,8 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
 
     # Optional: store a quick memory
     if payload.make_note:
-        add_memory(payload.user_id, payload.make_note, payload.message)
+        # Ensure correct parameter order: content first, then type
+        add_memory(payload.user_id, content=payload.make_note, mtype="note")
 
     if payload.save_fact:
         add_fact(payload.user_id, payload.save_fact)
@@ -313,7 +316,7 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                     pass
             yield "data: [DONE]\n\n"
 
-    return StreamingResponse(event_gen(), media_type="text/event-stream")
+    return StreamingResponse(event_gen(), media_type="text/event-stream", background=background_tasks)
 
 # ----------------- Tasks endpoints -----------------
 
@@ -354,3 +357,92 @@ def approve(pid: int, payload: ReviewIn):
 def reject(pid: int, payload: ReviewIn):
     ok = reject_pending_memory(payload.user_id, pid)
     return {"ok": ok}
+
+# ----------------- Memories CRUD -----------------
+
+@app.get("/memories", dependencies=[Depends(require_api_key)])
+def memories_list(user_id: str, limit: int = 200, type: Optional[str] = None, contains: Optional[str] = None):
+    return {"ok": True, "items": list_memories(user_id, limit=limit, mtype=type, contains=contains)}
+
+class MemoryUpdateIn(BaseModel):
+    user_id: str
+    content: Optional[str] = None
+    type: Optional[str] = None
+
+@app.post("/memories/{mem_id}", dependencies=[Depends(require_api_key)])
+def memories_update(mem_id: int, payload: MemoryUpdateIn):
+    ok = update_memory(payload.user_id, mem_id, content=payload.content, mtype=payload.type)
+    return {"ok": ok}
+
+class MemoryDeleteIn(BaseModel):
+    user_id: str
+
+@app.post("/memories/{mem_id}/delete", dependencies=[Depends(require_api_key)])
+def memories_delete(mem_id: int, payload: MemoryDeleteIn):
+    ok = delete_memory(payload.user_id, mem_id)
+    return {"ok": ok}
+
+@app.post("/memories/delete_all", dependencies=[Depends(require_api_key)])
+def memories_delete_all(payload: MemoryDeleteIn):
+    n = delete_all_memories(payload.user_id)
+    return {"ok": True, "deleted": n}
+
+# ----------------- URL summarizer -----------------
+
+class SummarizeIn(BaseModel):
+    url: str
+    user_id: Optional[str] = None
+
+@app.post("/summarize_url", dependencies=[Depends(require_api_key)])
+def summarize_url(payload: SummarizeIn):
+    try:
+        r = requests.get(payload.url, timeout=20)
+        r.raise_for_status()
+    except Exception as e:
+        raise HTTPException(400, f"Failed to fetch URL: {e}")
+
+    html = r.text
+    soup = BeautifulSoup(html, "html.parser")
+    title = (soup.title.string if soup.title else "").strip()
+    # Remove scripts/styles
+    for t in soup(["script","style","noscript"]):
+        t.decompose()
+    text = soup.get_text(" ")
+    text = " ".join(text.split())
+    text = text[:12000]  # cap
+
+    prompt = [
+        {"role": "system", "content": "Summarize the following webpage content in clear Markdown with headings and bullet points. Include key takeaways and any notable facts. Keep it concise. If content is too long, focus on the most relevant sections."},
+        {"role": "user", "content": f"URL: {payload.url}\nTitle: {title}\n\nCONTENT:\n{text}"},
+    ]
+    summary = cerebras_chat(prompt)
+    return {"ok": True, "title": title, "url": payload.url, "summary": summary}
+
+# ----------------- Memories CRUD -----------------
+
+@app.get("/memories", dependencies=[Depends(require_api_key)])
+def memories_list(user_id: str, limit: int = 200, type: Optional[str] = None, contains: Optional[str] = None):
+    return {"ok": True, "items": list_memories(user_id, limit=limit, mtype=type, contains=contains)}
+
+class MemoryUpdateIn(BaseModel):
+    user_id: str
+    content: Optional[str] = None
+    type: Optional[str] = None
+
+@app.post("/memories/{mem_id}", dependencies=[Depends(require_api_key)])
+def memories_update(mem_id: int, payload: MemoryUpdateIn):
+    ok = update_memory(payload.user_id, mem_id, content=payload.content, mtype=payload.type)
+    return {"ok": ok}
+
+class MemoryDeleteIn(BaseModel):
+    user_id: str
+
+@app.post("/memories/{mem_id}/delete", dependencies=[Depends(require_api_key)])
+def memories_delete(mem_id: int, payload: MemoryDeleteIn):
+    ok = delete_memory(payload.user_id, mem_id)
+    return {"ok": ok}
+
+@app.post("/memories/delete_all", dependencies=[Depends(require_api_key)])
+def memories_delete_all(payload: MemoryDeleteIn):
+    n = delete_all_memories(payload.user_id)
+    return {"ok": True, "deleted": n}

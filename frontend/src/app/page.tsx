@@ -4,7 +4,7 @@ import Message from "@/components/Message";
 import TypingBeam from "@/components/TypingBeam";
 import Sound from "@/components/Sound";
 import HUD from "@/components/HUD";
-import ReviewDrawer from "@/components/ReviewDrawer";
+import TasksDrawer from "@/components/TasksDrawer";
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -47,18 +47,31 @@ export default function Home() {
   // Focus input on mount
   useEffect(() => { inputRef.current?.focus(); }, []);
 
-  async function sendMessage(e: React.FormEvent) {
-    e.preventDefault();
+  async function sendMessage(e?: React.FormEvent) {
+    if (e) e.preventDefault();
     if (!input.trim() || loading) return;
     const userMsg: ChatMessage = { role: "user", content: input };
     setMessages((m) => [...m, userMsg]);
     setInput("");
     setLoading(true);
     try {
+      // Slash commands to persist memories/tasks explicitly
+      let save_fact: string | undefined;
+      let make_note: string | undefined;
+      let save_task: string | undefined;
+      const trimmed = userMsg.content.trim();
+      if (/^\/(remember)\s+/i.test(trimmed)) {
+        save_fact = trimmed.replace(/^\/(remember)\s+/i, "");
+      } else if (/^\/(note)\s+/i.test(trimmed)) {
+        make_note = trimmed.replace(/^\/(note)\s+/i, "");
+      } else if (/^\/(task)\s+/i.test(trimmed)) {
+        save_task = trimmed.replace(/^\/(task)\s+/i, "");
+      }
+
       const resp = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: "soumya", message: userMsg.content }),
+        body: JSON.stringify({ user_id: "soumya", message: userMsg.content, save_fact, make_note, save_task }),
       });
       if (!resp.ok || !resp.body) {
         const data = await resp.json().catch(() => ({}));
@@ -111,6 +124,8 @@ export default function Home() {
         <div className="max-w-5xl mx-auto px-2 lg:px-4 py-2 flex items-center justify-between">
           <div className="font-medium tracking-tight text-neutral-200">Eclipse</div>
           <div className="flex items-center gap-3">
+            <TasksDrawer userId="soumya" asHeader />
+            <a href="/memories" className="text-xs text-neutral-400 hover:text-neutral-100 transition">Memories</a>
             <button onClick={clearChat} className="text-xs text-neutral-400 hover:text-neutral-100 transition">New chat</button>
             <button
               onClick={async () => {
@@ -149,10 +164,36 @@ export default function Home() {
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+              }
+            }}
             placeholder={loading ? "Waiting for reply..." : "Ask anything about your vault"}
             ref={inputRef}
             className="flex-1 rounded-2xl bg-black/50 text-neutral-100 border border-white/10 px-3 py-2 outline-none focus:ring-2 focus:ring-cyan-700/50 backdrop-blur placeholder:text-neutral-500"
           />
+          {/https?:\/\//.test(input.trim()) && (
+            <button
+              type="button"
+              disabled={loading}
+              onClick={async () => {
+                try {
+                  const resp = await fetch("/api/summarize-url", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: input.trim(), user_id: "soumya" }) });
+                  const data = await resp.json();
+                  if (!resp.ok) throw new Error(data?.error || "Summarize failed");
+                  setMessages((m) => [...m, { role: "assistant", content: `# ${data.title || "Summary"}\n\n${data.summary || ""}` }]);
+                  setInput("");
+                } catch (e: any) {
+                  setMessages((m) => [...m, { role: "assistant", content: `Error: ${e?.message || e}` }]);
+                }
+              }}
+              className="rounded-2xl px-3 py-2 bg-white/10 text-white border border-white/10 hover:bg-white/20"
+            >
+              Summarize URL
+            </button>
+          )}
           <button
             type="submit"
             disabled={loading}
@@ -162,7 +203,7 @@ export default function Home() {
           </button>
         </div>
       </form>
-      <ReviewDrawer userId="soumya" />
+      <TasksDrawer userId="soumya" />
       <Sound play={messages[messages.length - 1]?.role === "assistant"} />
     </div>
   );
