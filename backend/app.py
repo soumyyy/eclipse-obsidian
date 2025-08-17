@@ -387,6 +387,19 @@ def memories_delete_all(payload: MemoryDeleteIn):
     n = delete_all_memories(payload.user_id)
     return {"ok": True, "deleted": n}
 
+# Create memory (note/fact/etc.)
+class MemoryCreateIn(BaseModel):
+    user_id: str
+    content: str
+    type: Optional[str] = "note"
+
+@app.post("/memories/create", dependencies=[Depends(require_api_key)])
+def memories_create(payload: MemoryCreateIn):
+    if not payload.content.strip():
+        raise HTTPException(400, "content required")
+    mid = add_memory(payload.user_id, payload.content, mtype=payload.type or "note")
+    return {"ok": True, "id": mid}
+
 # ----------------- URL summarizer -----------------
 
 class SummarizeIn(BaseModel):

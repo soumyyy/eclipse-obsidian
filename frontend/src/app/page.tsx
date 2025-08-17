@@ -47,6 +47,23 @@ export default function Home() {
   // Focus input on mount
   useEffect(() => { inputRef.current?.focus(); }, []);
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        clearChat();
+      }
+      if (mod && (e.key.toLowerCase() === 'j' || e.key.toLowerCase() === 'i')) {
+        e.preventDefault();
+        // Notify TasksDrawer to toggle
+        window.dispatchEvent(new CustomEvent('toggle-todo'));
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   async function sendMessage(e?: React.FormEvent) {
     if (e) e.preventDefault();
     if (!input.trim() || loading) return;
@@ -203,7 +220,6 @@ export default function Home() {
           </button>
         </div>
       </form>
-      <TasksDrawer userId="soumya" />
       <Sound play={messages[messages.length - 1]?.role === "assistant"} />
     </div>
   );
