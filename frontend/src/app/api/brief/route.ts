@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(req: NextRequest) {
   const backendUrl = process.env.BACKEND_URL || "http://127.0.0.1:8000";
-  const token = process.env.BACKEND_TOKEN || process.env.BACKEND_API_KEY || process.env.BACKEND_TOKEN;
+  const token = process.env.BACKEND_API_KEY;
   const { searchParams } = new URL(req.url);
   const user_id = searchParams.get("user_id") || "soumya";
   // Aggregate: open tasks + pending memories + recent memories

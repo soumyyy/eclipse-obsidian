@@ -2,11 +2,11 @@
 import os, sys, json, readline, requests
 
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://127.0.0.1:8000")
-API_KEY = os.environ.get("BACKEND_TOKEN", "")
+API_KEY = os.environ.get("BACKEND_API_KEY", os.environ.get("BACKEND_TOKEN", ""))
 USER_ID = os.environ.get("USER_ID", "soumya")
 
 if not API_KEY:
-    print("Set BACKEND_TOKEN in your env (export BACKEND_TOKEN=...)")
+    print("Set BACKEND_API_KEY in your env (export BACKEND_API_KEY=...) or BACKEND_TOKEN for backward compatibility")
     sys.exit(1)
 
 headers = {

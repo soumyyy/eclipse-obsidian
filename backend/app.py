@@ -25,8 +25,9 @@ import requests
 # ----------------- Config -----------------
 ASSISTANT      = os.getenv("ASSISTANT_NAME", "Atlas")
 FRONTEND_ORIG  = os.getenv("VERCEL_SITE", "http://localhost:3000").strip()
-BACKEND_TOKEN  = os.getenv("BACKEND_TOKEN", "").strip()
-ADMIN_TOKEN    = os.getenv("ADMIN_TOKEN", BACKEND_TOKEN).strip()  # default to same as BACKEND_TOKEN
+# Standardize on BACKEND_API_KEY/ADMIN_API_KEY with BACKEND_TOKEN/ADMIN_TOKEN fallbacks for compatibility
+BACKEND_API_KEY = os.getenv("BACKEND_API_KEY", os.getenv("BACKEND_TOKEN", "")).strip()
+ADMIN_API_KEY   = os.getenv("ADMIN_API_KEY", os.getenv("ADMIN_TOKEN", BACKEND_API_KEY)).strip()
 
 DATA_DIR       = "./data"
 INDEX_FAISS    = os.path.join(DATA_DIR, "index.faiss")
@@ -64,10 +65,10 @@ class ChatOut(BaseModel):
 
 # ----------------- Auth helpers -----------------
 def require_api_key(x_api_key: Optional[str] = Header(default=None)):
-    """Enforce X-API-Key **only** if BACKEND_TOKEN is set."""
-    if not BACKEND_TOKEN:
+    """Enforce X-API-Key if BACKEND_API_KEY is set."""
+    if not BACKEND_API_KEY:
         return
-    if not x_api_key or x_api_key != BACKEND_TOKEN:
+    if not x_api_key or x_api_key != BACKEND_API_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 # ----------------- LLM Prompt -----------------
@@ -160,7 +161,7 @@ def bootstrap():
 # ----------------- Health -----------------
 @app.get("/")
 def root():
-    return {"ok": True, "service": "obsidian-rag", "auth_required": bool(BACKEND_TOKEN)}
+    return {"ok": True, "service": "obsidian-rag", "auth_required": bool(BACKEND_API_KEY)}
 
 @app.get("/health")
 def health():
@@ -173,7 +174,7 @@ def healthz():
 # ----------------- Admin reindex -----------------
 @app.post("/admin/reindex")
 def admin_reindex(x_api_key: Optional[str] = Header(default=None)):
-    if ADMIN_TOKEN and x_api_key != ADMIN_TOKEN:
+    if ADMIN_API_KEY and x_api_key != ADMIN_API_KEY:
         raise HTTPException(401, "invalid token")
 
     tmp = fetch_repo_snapshot()
@@ -358,34 +359,7 @@ def reject(pid: int, payload: ReviewIn):
     ok = reject_pending_memory(payload.user_id, pid)
     return {"ok": ok}
 
-# ----------------- Memories CRUD -----------------
-
-@app.get("/memories", dependencies=[Depends(require_api_key)])
-def memories_list(user_id: str, limit: int = 200, type: Optional[str] = None, contains: Optional[str] = None):
-    return {"ok": True, "items": list_memories(user_id, limit=limit, mtype=type, contains=contains)}
-
-class MemoryUpdateIn(BaseModel):
-    user_id: str
-    content: Optional[str] = None
-    type: Optional[str] = None
-
-@app.post("/memories/{mem_id}", dependencies=[Depends(require_api_key)])
-def memories_update(mem_id: int, payload: MemoryUpdateIn):
-    ok = update_memory(payload.user_id, mem_id, content=payload.content, mtype=payload.type)
-    return {"ok": ok}
-
-class MemoryDeleteIn(BaseModel):
-    user_id: str
-
-@app.post("/memories/{mem_id}/delete", dependencies=[Depends(require_api_key)])
-def memories_delete(mem_id: int, payload: MemoryDeleteIn):
-    ok = delete_memory(payload.user_id, mem_id)
-    return {"ok": ok}
-
-@app.post("/memories/delete_all", dependencies=[Depends(require_api_key)])
-def memories_delete_all(payload: MemoryDeleteIn):
-    n = delete_all_memories(payload.user_id)
-    return {"ok": True, "deleted": n}
+# (Removed duplicate Memories CRUD block; primary definitions are above.)
 
 # Create memory (note/fact/etc.)
 class MemoryCreateIn(BaseModel):

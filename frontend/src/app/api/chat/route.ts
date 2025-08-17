@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 export async function POST(req: Request) {
   try {
     const backendUrl = process.env.BACKEND_URL || "http://127.0.0.1:8000";
-    const token = process.env.BACKEND_TOKEN || process.env.BACKEND_API_KEY || process.env.BACKEND_TOKEN;
+    const token = process.env.BACKEND_API_KEY;
     const payload = await req.json();
 
     const resp = await fetch(`${backendUrl}/chat`, {

@@ -1,6 +1,6 @@
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   const backendUrl = process.env.BACKEND_URL || "http://127.0.0.1:8000";
-  const token = process.env.BACKEND_TOKEN || process.env.BACKEND_API_KEY || process.env.BACKEND_TOKEN;
+  const token = process.env.BACKEND_API_KEY;
   const body = await req.json();
   const upstream = await fetch(`${backendUrl}/memories/pending/${params.id}/approve`, {
     method: "POST",

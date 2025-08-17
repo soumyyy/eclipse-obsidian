@@ -1,6 +1,6 @@
 export async function POST(req: Request) {
   const backendUrl = process.env.BACKEND_URL || "http://127.0.0.1:8000";
-  const token = process.env.BACKEND_TOKEN || process.env.BACKEND_API_KEY || process.env.BACKEND_TOKEN;
+  const token = process.env.BACKEND_API_KEY;
   const payload = await req.json();
   const upstream = await fetch(`${backendUrl}/chat/stream`, {
     method: "POST",
@@ -10,8 +10,12 @@ export async function POST(req: Request) {
     },
     body: JSON.stringify(payload),
   });
+  if (!upstream.ok || !upstream.body) {
+    const errText = await upstream.text().catch(() => "Upstream error");
+    return new Response(errText, { status: upstream.status || 500 });
+  }
   return new Response(upstream.body, {
-    status: 200,
+    status: upstream.status,
     headers: {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",

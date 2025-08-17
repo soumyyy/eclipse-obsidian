@@ -3,7 +3,8 @@ import { NextResponse } from "next/server";
 export async function GET() {
   try {
     const backendUrl = process.env.BACKEND_URL || "http://127.0.0.1:8000";
-    const resp = await fetch(`${backendUrl}/health`, { cache: "no-store" });
+    const token = process.env.BACKEND_API_KEY;
+    const resp = await fetch(`${backendUrl}/health`, { cache: "no-store", headers: { ...(token ? { "x-api-key": token } : {}) } });
     const data = await resp.json();
     if (!resp.ok) return NextResponse.json({ ok: false, error: data?.detail || "Upstream error" }, { status: resp.status });
     return NextResponse.json({ ok: true, data });

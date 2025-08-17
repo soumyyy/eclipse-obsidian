@@ -147,6 +147,21 @@ export default function Home() {
             <button
               onClick={async () => {
                 try {
+                  const r = await fetch("/api/admin/reindex", { method: "POST" });
+                  const d = await r.json();
+                  if (!r.ok || !d?.ok) throw new Error(d?.error || "Reindex failed");
+                  alert("Reindex started / completed.");
+                } catch (e: any) {
+                  alert(`Reindex error: ${e?.message || e}`);
+                }
+              }}
+              className="text-xs text-neutral-400 hover:text-neutral-100 transition"
+            >
+              Reindex
+            </button>
+            <button
+              onClick={async () => {
+                try {
                   const r = await fetch("/api/health", { cache: "no-store" });
                   const d = await r.json();
                   setHealthy(d.ok === true);
