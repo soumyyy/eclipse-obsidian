@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional
 from llm_cerebras import cerebras_chat_with_model
 from memory import add_memory, recall_memories, add_task, upsert_entity, link_memory_to_entity, add_pending_memory
 from date_utils import parse_due_text_to_ts
+import re
 
 
 def _normalize_type(t: str) -> str:
@@ -95,6 +96,27 @@ def _hash_key(key: str) -> str:
     return hashlib.sha1(key.encode("utf-8")).hexdigest()
 
 
+# ---- trigger detection for explicit task capture ----
+
+_TASK_TRIGGER_PATTERNS = [
+    r"\bremind me\b",
+    r"\bset (?:a )?reminder\b",
+    r"\bcreate (?:a )?task\b",
+    r"\badd (?:this )?to(?: my)? (?:to[- ]?do|todo|tasks?)\b",
+    r"\bto[- ]?do\b",
+    r"\bfollow up\b",
+    r"\bschedule\b",
+    r"\bdue (?:on|by)\b",
+]
+
+def _detect_task_trigger(user_msg: str) -> bool:
+    text = (user_msg or "").lower()
+    for pat in _TASK_TRIGGER_PATTERNS:
+        if re.search(pat, text):
+            return True
+    return False
+
+
 def extract_memories(user_id: str, user_msg: str, assistant_reply: str, recent_turns: Optional[List[Dict]] = None, top_snippets: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     messages = _build_prompt(user_msg, assistant_reply, recent_turns, top_snippets)
     raw = cerebras_chat_with_model(messages, model=None, temperature=0.0, max_tokens=400)
@@ -179,7 +201,7 @@ def extract_memories(user_id: str, user_msg: str, assistant_reply: str, recent_t
     return out
 
 
-def store_extracted_memories(user_id: str, items: List[Dict[str, Any]]) -> int:
+def store_extracted_memories(user_id: str, items: List[Dict[str, Any]], task_triggered: bool = False) -> int:
     # Mode: 'review' (default), 'auto' (save everything), 'hybrid' (auto-save facts/tasks/preferences)
     mode = (os.getenv("AUTO_MEMORY_MODE") or "review").strip().lower()
     min_conf = float(os.getenv("AUTO_MEMORY_MIN_CONF", "0.4"))
@@ -204,7 +226,12 @@ def store_extracted_memories(user_id: str, items: List[Dict[str, Any]]) -> int:
                 should_auto = True
 
         # If not explicitly allowed above, fall back to thresholds
-        if should_auto or (confidence >= min_conf and priority <= 2):
+        # Additionally: gate tasks — only auto-create tasks when an explicit trigger is present
+        eligible_for_auto = should_auto or (confidence >= min_conf and priority <= 2)
+        if mtype == "task" and not task_triggered:
+            eligible_for_auto = False
+
+        if eligible_for_auto:
             if mtype == "task":
                 add_task(user_id, content, due_ts=it.get("due_ts"))
             else:
@@ -251,12 +278,14 @@ def extract_and_store_memories(user_id: str, user_msg: str, assistant_reply: str
             if txt:
                 snippets.append(txt[:400])
     items = extract_memories(user_id, user_msg, assistant_reply, recent_turns=None, top_snippets=snippets)
+    # Determine if the user explicitly asked to capture a task/note
+    task_triggered = _detect_task_trigger(user_msg)
     # Optional debug log
     if os.getenv("AUTO_MEMORY_DEBUG", "false").strip().lower() in ("1", "true", "yes"):
         try:
             print(f"[memory_extractor] extracted {len(items)} items for user={user_id}")
         except Exception:
             pass
-    store_extracted_memories(user_id, items)
+    store_extracted_memories(user_id, items, task_triggered=task_triggered)
 
 

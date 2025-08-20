@@ -120,13 +120,13 @@ class RAG:
     def retrieve(self, query: str):
         # returns only hits (list of {text, path, score, ...})
         # Hybrid: light BM25 via SQLite FTS + dense search; then re-rank by combined score
-        dense_context, dense_hits = self.retriever.build_context(query, k=self.top_k * 4)
+        dense_context, dense_hits = self.retriever.build_context(query, k=self.top_k * 6)
         keyword_hits = []
         try:
             if os.path.exists(self._sqlite_path):
                 con = sqlite3.connect(self._sqlite_path)
                 cur = con.cursor()
-                cur.execute("SELECT id, relpath, text FROM chunks_fts WHERE chunks_fts MATCH ? LIMIT ?", (query, self.top_k * 6))
+                cur.execute("SELECT id, relpath, text FROM chunks_fts WHERE chunks_fts MATCH ? LIMIT ?", (query, self.top_k * 12))
                 keyword_hits = [
                     {"id": rid, "path": rel, "text": txt, "score": 0.0}
                     for (rid, rel, txt) in cur.fetchall()
@@ -135,19 +135,34 @@ class RAG:
         except Exception:
             keyword_hits = []
 
-        # Combine and naive re-rank: prioritize dense scores; add keyword hits with slight boost if overlapping ids
-        by_id = {}
-        for h in dense_hits:
-            by_id[h.get("id") or h.get("path")] = {**h, "score_dense": h.get("score", 0.0), "score_kw": 0.0}
-        for h in keyword_hits:
-            key = h.get("id") or h.get("path")
-            if key in by_id:
-                by_id[key]["score_kw"] = by_id[key].get("score_kw", 0.0) + 0.1
-            else:
-                by_id[key] = {**h, "score_dense": 0.0, "score_kw": 0.1}
+        # Reciprocal Rank Fusion (RRF) for robust hybrid ranking
+        # rrf_score = sum(1 / (k + rank)) across lists; k ~ 60 common
+        k_rrf = 60.0
+        rrf: dict[str, dict] = {}
 
-        merged = list(by_id.values())
-        merged.sort(key=lambda x: (x.get("score_dense", 0.0) + x.get("score_kw", 0.0)), reverse=True)
+        for rank, h in enumerate(dense_hits, start=1):
+            key = h.get("id") or h.get("path")
+            if not key:
+                key = f"dense::{rank}"
+            prev = rrf.get(key) or {**h, "score": 0.0}
+            prev["score"] = float(prev.get("score", 0.0)) + 1.0 / (k_rrf + rank)
+            rrf[key] = prev
+
+        for rank, h in enumerate(keyword_hits, start=1):
+            key = h.get("id") or h.get("path")
+            if not key:
+                key = f"kw::{rank}"
+            prev = rrf.get(key) or {**h, "score": 0.0}
+            prev["score"] = float(prev.get("score", 0.0)) + 1.0 / (k_rrf + rank)
+            # keep the longest text if merging
+            if "text" in h and len(h.get("text") or "") > len(prev.get("text") or ""):
+                prev["text"] = h.get("text")
+            if "path" in h and h.get("path"):
+                prev["path"] = h.get("path")
+            rrf[key] = prev
+
+        merged = list(rrf.values())
+        merged.sort(key=lambda x: x.get("score", 0.0), reverse=True)
         return merged[: self.top_k]
 
     def build_context(self, query: str):

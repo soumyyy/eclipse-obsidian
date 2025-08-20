@@ -38,8 +38,8 @@ export default function Message({ role, content, formatted }: MessageProps) {
         className={[
           "relative max-w-[85%] rounded-2xl border shadow-sm",
           isUser
-            ? "px-4 py-3 border-cyan-500/30 bg-cyan-950/20" 
-            : "px-5 py-3 border-white/10 bg-gray-900/25",
+            ? "px-5 sm:px-6 py-3.5 border-cyan-500/30 bg-cyan-950/20" 
+            : "px-6 sm:px-7 py-4 border-white/10 bg-gray-900/25",
         ].join(" ")}
       >
         {isUser ? (
@@ -143,21 +143,21 @@ export default function Message({ role, content, formatted }: MessageProps) {
               },
               
               table: ({children}) => (
-                <div className="my-4 overflow-x-auto rounded-xl border border-gray-700/60 bg-gray-900/30 shadow-sm">
-                  <table className="w-full">
+                <div className="my-4 overflow-x-auto rounded-xl border border-gray-700/60 bg-gray-900/30 shadow-sm inline-block max-w-full">
+                  <table className="table-auto w-auto max-w-full">
                     {children}
                   </table>
                 </div>
               ),
               
               th: ({children}) => (
-                <th className="border border-gray-700/50 px-3.5 py-2.5 bg-gray-800/60 text-white font-semibold text-left text-sm">
+                <th className="border border-gray-700/50 px-3.5 py-2.5 bg-gray-800/60 text-white font-semibold text-left text-sm whitespace-normal break-words align-top">
                   {children}
                 </th>
               ),
               
               td: ({children}) => (
-                <td className="border border-gray-700/50 px-3.5 py-2.5 text-gray-100 text-sm">
+                <td className="border border-gray-700/50 px-3.5 py-2.5 text-gray-100 text-sm whitespace-normal break-words align-top">
                   {children}
                 </td>
               ),
