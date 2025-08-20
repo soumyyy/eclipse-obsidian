@@ -1,5 +1,6 @@
 # rag.py
 import os
+from pathlib import Path
 import pickle
 import sqlite3
 import numpy as np
@@ -7,9 +8,10 @@ import faiss
 
 from sentence_transformers import SentenceTransformer  # embedding model
 
-DATA_DIR = "./data"
-INDEX_PATH = os.path.join(DATA_DIR, "index.faiss")
-DOCS_PATH  = os.path.join(DATA_DIR, "docs.pkl")
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = str(BASE_DIR / "data")
+INDEX_PATH = str(BASE_DIR / "data" / "index.faiss")
+DOCS_PATH  = str(BASE_DIR / "data" / "docs.pkl")
 
 # ---------- minimal FAISS-backed retriever ----------
 

@@ -1,13 +1,17 @@
 # --- Load .env before anything else ---
 import os, hmac, hashlib, shutil
+import io
+import json
+import numpy as np
 from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 # --------------------------------------
 
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
+import re, time
 
-from fastapi import FastAPI, Header, HTTPException, Request, Depends, BackgroundTasks
+from fastapi import FastAPI, Header, HTTPException, Request, Depends, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -16,7 +20,7 @@ from pydantic import BaseModel
 from rag import RAG, make_faiss_retriever                      # our retriever class
 from ingest import ingest_from_dir   # ingest pipeline that builds FAISS/docs from a dir
 from github_fetch import fetch_repo_snapshot
-from memory import ensure_db, recall_memories, add_memory, add_task, list_tasks, complete_task, add_fact, add_summary, list_pending_memories, approve_pending_memory, reject_pending_memory, list_memories, update_memory, delete_memory, delete_all_memories
+from memory import ensure_db, recall_memories, add_memory, add_task, list_tasks, complete_task, add_fact, add_summary, list_pending_memories, approve_pending_memory, reject_pending_memory, list_memories, update_memory, delete_memory, delete_all_memories, search_memories
 from llm_cerebras import cerebras_chat   # Cerebras chat wrapper
 from memory_extractor import extract_and_store_memories
 from bs4 import BeautifulSoup
@@ -29,9 +33,10 @@ FRONTEND_ORIG  = os.getenv("VERCEL_SITE", "http://localhost:3000").strip()
 BACKEND_API_KEY = os.getenv("BACKEND_API_KEY", os.getenv("BACKEND_TOKEN", "")).strip()
 ADMIN_API_KEY   = os.getenv("ADMIN_API_KEY", os.getenv("ADMIN_TOKEN", BACKEND_API_KEY)).strip()
 
-DATA_DIR       = "./data"
-INDEX_FAISS    = os.path.join(DATA_DIR, "index.faiss")
-DOCS_PKL       = os.path.join(DATA_DIR, "docs.pkl")
+BASE_DIR       = Path(__file__).resolve().parent
+DATA_DIR       = str(BASE_DIR / "data")
+INDEX_FAISS    = str(BASE_DIR / "data" / "index.faiss")
+DOCS_PKL       = str(BASE_DIR / "data" / "docs.pkl")
 
 # ----------------- FastAPI -----------------
 app = FastAPI(title="Obsidian RAG + Cerebras Assistant")
@@ -57,11 +62,26 @@ class ChatIn(BaseModel):
     use_web: bool = False  # reserved, not used here
     save_fact: Optional[str] = None   # explicit fact content
     save_task: Optional[str] = None   # explicit task content
+    session_id: Optional[str] = None  # tie ephemeral uploads to a chat session
 
 class ChatOut(BaseModel):
     reply: str
     sources: List[Dict] = []
     tools_used: List[str] = []
+
+# --------- Structured JSON answer schema (for deterministic formatting) ---------
+class Table(BaseModel):
+    headers: List[str] = []
+    rows: List[List[str]] = []
+
+class Section(BaseModel):
+    heading: str
+    bullets: List[str] = []
+    table: Optional[Table] = None
+
+class JsonAnswer(BaseModel):
+    title: str
+    sections: List[Section] = []
 
 # ----------------- Auth helpers -----------------
 def require_api_key(x_api_key: Optional[str] = Header(default=None)):
@@ -73,26 +93,142 @@ def require_api_key(x_api_key: Optional[str] = Header(default=None)):
 
 # ----------------- LLM Prompt -----------------
 SYSTEM_PROMPT = f"""You are {ASSISTANT}, a helpful personal assistant.
-Use the provided CONTEXT and MEMORIES to answer accurately and concisely.
-Cite snippets using [1], [2], etc. If unsure, say so and suggest next steps.
-Format answers in clear Markdown:
-- Use headings for sections
-- Use bullet lists with one item per line
-- Insert line breaks between sections and lists
-- Use code fences for code blocks
-- Avoid emojis unless asked
-- Talk like Jarvis from Iron man, and keep your responses short and concise.
+You MUST return ONLY valid JSON matching this TypeScript-like schema, with no extra text. If the user asks for a table, prefer filling the `table` field with suitable headers and rows:
+{{
+  "title": string,
+  "sections": Array<{{
+    "heading": string,
+    "bullets"?: string[],
+    "table"?: {{ "headers": string[], "rows": string[][] }}
+  }}>
+}}
+
+Strict rules:
+- Do not include citations or bracketed references like [1], [2], [(11)(10)], or [[4]].
+- Keep bullet points concise; one idea per bullet.
+- If you need to show code, put the code as a single bullet string containing fenced code.
+- Do not output markdown, prose, or any commentary outside the JSON object.
+
+You may use the provided CONTEXT, MEMORIES and UPLOADS to build the JSON content. If unsure, reflect that in a bullet.
 """
 
-def build_messages(user_id: str, user_msg: str, context: str, memories_text: str):
+def build_messages(user_id: str, user_msg: str, context: str, memories_text: str, uploads_info: Optional[str] = None):
     history = _get_history(user_id)
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": f"UPLOADS:\n{uploads_info or 'none'}"},
         {"role": "system", "content": f"MEMORIES:\n{memories_text or '(none)'}"},
         {"role": "system", "content": f"CONTEXT:\n{context or '(no retrieval hits)'}"},
         *history,
         {"role": "user", "content": user_msg},
     ]
+
+# ----------------- Post-formatting helpers -----------------
+def _sanitize_inline(text: str) -> str:
+    if not text:
+        return ""
+    # Normalize unicode spaces, remove zero-width / soft hyphen
+    text = re.sub(r"[\u00A0\u202F\u2007]", " ", text)
+    text = re.sub(r"[\u200B-\u200D\u2060\u00AD]", "", text)
+    # Stitch mid-word newlines and collapse remaining newlines to spaces
+    text = re.sub(r"([A-Za-z0-9])\s*\n\s*([A-Za-z0-9])", r"\1\2", text)
+    text = re.sub(r"\s*\n\s*", " ", text)
+    # Collapse multiple spaces
+    text = re.sub(r"\s{2,}", " ", text)
+    return text.strip()
+
+def _render_markdown(ans: JsonAnswer, prefer_table: bool = False) -> str:
+    lines: List[str] = []
+    title = _sanitize_inline(ans.title or "")
+    if title:
+        lines.append(f"# {title}")
+        lines.append("")
+    sections = ans.sections or []
+
+    # If table preferred and no explicit tables present, synthesize one from sections
+    has_any_table = any(bool(getattr(s, "table", None)) for s in sections)
+    if prefer_table and not has_any_table and sections:
+        headers = ["Category", "Details"]
+        rows: List[List[str]] = []
+        for s in sections:
+            h = _sanitize_inline(s.heading or "")
+            bullets = [
+                _sanitize_inline(b)
+                for b in (s.bullets or [])
+                if _sanitize_inline(b) and not re.fullmatch(r"[•\-—|.]+", _sanitize_inline(b))
+            ]
+            details = "; ".join(bullets)
+            if h or details:
+                rows.append([h, details])
+        if rows:
+            lines.append("| " + " | ".join(headers) + " |")
+            lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+            for r in rows:
+                lines.append("| " + " | ".join(r) + " |")
+            return "\n".join(lines).strip()
+
+    for sec in sections:
+        h = _sanitize_inline(sec.heading or "")
+        if h:
+            lines.append(f"## {h}")
+        bullets = [
+            _sanitize_inline(b)
+            for b in (sec.bullets or [])
+            if _sanitize_inline(b) and not re.fullmatch(r"[•\-—|.]+", _sanitize_inline(b))
+        ]
+        if bullets:
+            for b in bullets:
+                lines.append(f"- {b}")
+        if sec.table and (sec.table.headers or sec.table.rows):
+            hdrs = [str(h).strip() for h in (sec.table.headers or [])]
+            if hdrs:
+                lines.append("| " + " | ".join(hdrs) + " |")
+                lines.append("| " + " | ".join(["---"] * len(hdrs)) + " |")
+            for row in (sec.table.rows or []):
+                cells = [str(c).strip() for c in row]
+                lines.append("| " + " | ".join(cells) + " |")
+        lines.append("")
+    out = "\n".join(lines).strip()
+    return out or ""
+
+def _fallback_sanitize(raw: str) -> str:
+    try:
+        txt = str(raw or "")
+        # Normalize unicode spaces and remove zero-width/soft hyphen
+        txt = re.sub(r"[\u00A0\u202F\u2007]", " ", txt)
+        txt = re.sub(r"[\u200B-\u200D\u2060\u00AD]", "", txt)
+        # Stitch mid-word newlines like "Overvie\nw" => "Overview"
+        txt = re.sub(r"([A-Za-z0-9])\s*\n\s*([A-Za-z0-9])", r"\1\2", txt)
+        # Collapse 3+ blank lines to 2; keep single newlines intact
+        txt = re.sub(r"\n{3,}", "\n\n", txt)
+        # Remove stray single-letter lines
+        txt = re.sub(r"^\s*[A-Za-z]\s*$", "", txt, flags=re.M)
+        # Trim trailing spaces on lines
+        txt = re.sub(r"[ \t]+\n", "\n", txt)
+        return txt.strip()
+    except Exception:
+        return str(raw or "")
+
+def _ensure_json_and_markdown(raw: str, prefer_table: bool = False) -> Tuple[Optional[JsonAnswer], str]:
+    try:
+        obj = json.loads(raw)
+        ans = JsonAnswer(**obj)
+        return ans, _render_markdown(ans, prefer_table=prefer_table)
+    except Exception:
+        # Attempt a one-shot repair call to coerce into schema
+        try:
+            from llm_cerebras import cerebras_chat
+            repair_prompt = [
+                {"role": "system", "content": "You are a JSON repair tool. Return ONLY valid JSON matching this exact schema: { title: string, sections: [{ heading: string, bullets?: string[], table?: { headers: string[], rows: string[][] } }] }. No explanations."},
+                {"role": "user", "content": raw[:6000]},
+            ]
+            fixed = cerebras_chat(repair_prompt, temperature=0.0, max_tokens=800)
+            obj = json.loads(fixed)
+            ans = JsonAnswer(**obj)
+            return ans, _render_markdown(ans, prefer_table=prefer_table)
+        except Exception:
+            # Fallback: keep structure; minimal cleanup only
+            return None, _fallback_sanitize(raw)
 
 # ----------------- Retriever singleton -----------------
 _retriever: Optional[RAG] = None
@@ -102,12 +238,59 @@ def get_retriever():
     global _rag
     if _rag is None:
         retr, embed_fn = make_faiss_retriever(
-            index_path="./data/index.faiss",
-            docs_path="./data/docs.pkl",
+            index_path=str(Path(__file__).resolve().parent / "data" / "index.faiss"),
+            docs_path=str(Path(__file__).resolve().parent / "data" / "docs.pkl"),
             model_name="sentence-transformers/all-MiniLM-L6-v2",
         )
         _rag = RAG(retriever=retr, embed_fn=embed_fn, top_k=5)
     return _rag
+
+# ----------------- Ephemeral per-session uploads -----------------
+# Do NOT persist to FAISS or memory. In-memory only per session.
+EPHEMERAL_SESSIONS: Dict[str, Dict[str, object]] = {}
+
+def _ephemeral_add(session_id: str, texts_with_paths: List[Dict[str, str]]):
+    if not session_id:
+        return
+    rag = get_retriever()
+    embed_fn = rag.embed_fn
+    texts = [twp["text"] for twp in texts_with_paths]
+    if not texts:
+        return
+    vecs = embed_fn(texts)  # already L2-normalized float32
+    store = EPHEMERAL_SESSIONS.setdefault(session_id, {"vecs": None, "items": []})
+    old_vecs = store["vecs"]
+    if old_vecs is None:
+        store["vecs"] = vecs
+    else:
+        store["vecs"] = np.vstack([old_vecs, vecs])
+    store["items"] = (store["items"] or []) + texts_with_paths
+
+def _ephemeral_retrieve(session_id: Optional[str], query: str, top_k: int = 5):
+    if not session_id or session_id not in EPHEMERAL_SESSIONS:
+        return []
+    rag = get_retriever()
+    embed_fn = rag.embed_fn
+    qv = embed_fn(query)
+    store = EPHEMERAL_SESSIONS[session_id]
+    vecs: np.ndarray = store.get("vecs")  # type: ignore
+    items: List[Dict[str, str]] = store.get("items")  # type: ignore
+    if vecs is None or vecs.size == 0:
+        return []
+    # cosine via dot since vectors are L2-normalized
+    scores = vecs @ qv[0].astype(np.float32)
+    idx = np.argsort(-scores)[: top_k]
+    hits = []
+    for rank, i in enumerate(idx.tolist()):
+        item = items[i]
+        hits.append({
+            "rank": rank + 1,
+            "score": float(scores[i]),
+            "text": item.get("text", ""),
+            "path": item.get("path", "(upload)"),
+            "id": f"ephemeral::{i}",
+        })
+    return hits
 
 # ----------------- In-memory session history -----------------
 # NOTE: For production, replace with Redis or a DB-backed store.
@@ -177,11 +360,17 @@ def admin_reindex(x_api_key: Optional[str] = Header(default=None)):
     if ADMIN_API_KEY and x_api_key != ADMIN_API_KEY:
         raise HTTPException(401, "invalid token")
 
-    tmp = fetch_repo_snapshot()
-    try:
-        ingest_from_dir(tmp)
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    # Option A: GitHub snapshot if env present, else local vault
+    ref = os.getenv("GITHUB_REF") or os.getenv("GITHUB_BRANCH")
+    use_github = all(os.getenv(k) for k in ("GITHUB_OWNER","GITHUB_REPO","GITHUB_TOKEN")) and bool(ref)
+    if use_github:
+        tmp = fetch_repo_snapshot()
+        try:
+            ingest_from_dir(tmp)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    else:
+        ingest_from_dir("./vault")
 
     # refresh retriever
     global _rag
@@ -223,10 +412,18 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
     if not payload.message.strip():
         raise HTTPException(400, "message required")
 
-    # Retrieve context from FAISS
+    # Retrieve context from FAISS and stitch in matching memories
     try:
         retriever = get_retriever()
         context, hits = retriever.build_context(payload.message)
+        mem_hits = search_memories(payload.user_id, payload.message, limit=5)
+        if mem_hits:
+            mem_section = "\n\n".join(f"(memory) [{i+1}] ({m['type']}) {m['content']}" for i, m in enumerate(mem_hits))
+            context = (context + "\n\n" + mem_section) if context else mem_section
+        eph_hits = _ephemeral_retrieve(payload.session_id, payload.message, top_k=5)
+        # Merge: prioritize ephemeral, then dense
+        all_hits = eph_hits + [h for h in hits if h not in eph_hits]
+        context = "\n\n".join(f"[{i+1}] {h['text']}" for i, h in enumerate(all_hits))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Retriever not ready: {e}. Run `python ingest.py`.") from e
 
@@ -256,10 +453,28 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
     memories_text = "\n".join(_fmt_mem_row(r) for r in (mems or []))
 
     # Build messages and call LLM
-    messages = build_messages(payload.user_id, payload.message, context, memories_text)
+    # Build uploads info for prompt steering
+    uploads_info = None
+    if payload.session_id and payload.session_id in EPHEMERAL_SESSIONS:
+        try:
+            items = EPHEMERAL_SESSIONS[payload.session_id].get("items") or []
+            files = []
+            for it in items:
+                p = it.get("path", "(upload)")
+                fname = str(p).split("::", 1)[0]
+                if fname not in files:
+                    files.append(fname)
+            uploads_info = f"count={len(files)} files: {', '.join(files[:6])}"
+        except Exception:
+            uploads_info = "present"
+    messages = build_messages(payload.user_id, payload.message, context, memories_text, uploads_info)
     reply = cerebras_chat(messages)
+    # Try to coerce to JSON-first answer and render deterministic markdown
+    # Fix word-boundary: single backslash in raw regex literal
+    prefer_table = bool(re.search(r"\b(table|tabulate|comparison|vs)\b", payload.message, flags=re.I))
+    _, formatted_md = _ensure_json_and_markdown(reply, prefer_table=prefer_table)
     _append_history(payload.user_id, "user", payload.message)
-    _append_history(payload.user_id, "assistant", reply)
+    _append_history(payload.user_id, "assistant", formatted_md or reply)
 
     # Optional: store a quick memory
     if payload.make_note:
@@ -272,12 +487,13 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
         add_task(payload.user_id, payload.save_task)
 
     # Background memory extraction (feature-flagged)
-    if os.getenv("AUTO_MEMORY", "true").lower() in ("1","true","yes"):
+    # Avoid storing memories when ephemeral uploads are used in this session
+    if (os.getenv("AUTO_MEMORY", "true").lower() in ("1","true","yes")) and not (locals().get("eph_hits")):
         background_tasks.add_task(extract_and_store_memories, payload.user_id, payload.message, reply, hits)
 
     return ChatOut(
-        reply=reply,
-        sources=[{"path": h["path"], "score": h["score"]} for h in hits],
+        reply=formatted_md or reply,
+        sources=[{"path": h.get("path"), "score": h.get("score", 0.0)} for h in (all_hits if 'all_hits' in locals() else hits)],
         tools_used=[],
     )
 
@@ -290,34 +506,138 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
     try:
         retriever = get_retriever()
         context, hits = retriever.build_context(payload.message)
+        mem_hits = search_memories(payload.user_id, payload.message, limit=5)
+        if mem_hits:
+            mem_section = "\n\n".join(f"(memory) [{i+1}] ({m['type']}) {m['content']}" for i, m in enumerate(mem_hits))
+            context = (context + "\n\n" + mem_section) if context else mem_section
+        eph_hits = _ephemeral_retrieve(payload.session_id, payload.message, top_k=5)
+        all_hits = eph_hits + [h for h in hits if h not in eph_hits]
+        context = "\n\n".join(f"[{i+1}] {h['text']}" for i, h in enumerate(all_hits))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Retriever not ready: {e}. Run `python ingest.py`.") from e
 
     mems = recall_memories(payload.user_id, limit=6)
     memories_text = "\n".join(str(m) for m in (mems or []))
-    messages = build_messages(payload.user_id, payload.message, context, memories_text)
+    uploads_info = None
+    if payload.session_id and payload.session_id in EPHEMERAL_SESSIONS:
+        try:
+            items = EPHEMERAL_SESSIONS[payload.session_id].get("items") or []
+            files = []
+            for it in items:
+                p = it.get("path", "(upload)")
+                fname = str(p).split("::", 1)[0]
+                if fname not in files:
+                    files.append(fname)
+            uploads_info = f"count={len(files)} files: {', '.join(files[:6])}"
+        except Exception:
+            uploads_info = "present"
+    messages = build_messages(payload.user_id, payload.message, context, memories_text, uploads_info)
 
     from llm_cerebras import cerebras_chat_stream
 
     def event_gen():
         buffer = []
+        last_ping = time.time()
         try:
             for chunk in cerebras_chat_stream(messages, temperature=0.3, max_tokens=800):
                 if chunk:
                     buffer.append(chunk)
                     yield f"data: {chunk}\n\n"
+                # Heartbeat every ~12s to keep proxies from closing the stream
+                if time.time() - last_ping > 12:
+                    last_ping = time.time()
+                    yield "data: {\"type\":\"ping\"}\n\n"
         finally:
             full = "".join(buffer)
             _append_history(payload.user_id, "user", payload.message)
-            _append_history(payload.user_id, "assistant", full)
-            if os.getenv("AUTO_MEMORY", "true").lower() in ("1","true","yes"):
+            # Format to JSON-first → markdown and store formatted in history
+            prefer_table = bool(re.search(r"\b(table|tabulate|comparison|vs)\b", payload.message, flags=re.I))
+            ans, formatted_md = _ensure_json_and_markdown(full, prefer_table=prefer_table)
+            _append_history(payload.user_id, "assistant", formatted_md or full)
+            # Avoid storing memories when ephemeral uploads influenced this reply
+            if os.getenv("AUTO_MEMORY", "true").lower() in ("1","true","yes") and not (locals().get("eph_hits")):
                 try:
-                    background_tasks.add_task(extract_and_store_memories, payload.user_id, payload.message, full, hits)
+                    background_tasks.add_task(extract_and_store_memories, payload.user_id, payload.message, formatted_md or full, hits)
                 except Exception:
                     pass
+            # Emit sources metadata for the client to attach citations
+            try:
+                meta_sources = [{"path": h.get("path"), "score": h.get("score", 0.0)} for h in (all_hits if 'all_hits' in locals() else hits)]
+                yield f"data: {json.dumps({'type':'meta','sources': meta_sources})}\n\n"
+            except Exception:
+                pass
+            # Emit a final formatted markdown event so the client can replace live text
+            try:
+                if formatted_md:
+                    yield f"data: {json.dumps({'type':'final_md','content': formatted_md})}\n\n"
+            except Exception:
+                pass
             yield "data: [DONE]\n\n"
 
-    return StreamingResponse(event_gen(), media_type="text/event-stream", background=background_tasks)
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        background=background_tasks,
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+# ----------------- File Uploads (Ephemeral) -----------------
+
+def _read_pdf_bytes(data: bytes) -> str:
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(data))
+        parts = []
+        for page in reader.pages:
+            try:
+                parts.append(page.extract_text() or "")
+            except Exception:
+                continue
+        return "\n\n".join(p.strip() for p in parts if p and p.strip())
+    except Exception as e:
+        return ""
+
+@app.post("/upload", dependencies=[Depends(require_api_key)])
+async def upload_files(session_id: str = Form(...), files: List[UploadFile] = File(...)):
+    if not session_id:
+        raise HTTPException(400, "session_id required")
+    texts_with_paths: List[Dict[str, str]] = []
+    from ingest import clean_markdown, smart_chunk
+    for f in files:
+        try:
+            raw = await f.read()
+            name = f.filename or "upload"
+            ext = (name.rsplit(".", 1)[-1] or "").lower()
+            text = ""
+            if ext in ("md", "markdown"):
+                try:
+                    text = raw.decode("utf-8", errors="ignore")
+                except Exception:
+                    text = str(raw)
+                text = clean_markdown(text)
+            elif ext in ("pdf",):
+                text = _read_pdf_bytes(raw)
+            else:
+                # treat as plain text
+                try:
+                    text = raw.decode("utf-8", errors="ignore")
+                except Exception:
+                    text = str(raw)
+            if not text:
+                continue
+            chunks = smart_chunk(text, target_size=800, overlap=100)
+            for ci, ch in enumerate(chunks):
+                texts_with_paths.append({"text": ch, "path": f"{name}::chunk{ci}"})
+        except Exception:
+            continue
+    if not texts_with_paths:
+        return {"ok": True, "added": 0}
+    _ephemeral_add(session_id, texts_with_paths)
+    return {"ok": True, "added": len(texts_with_paths)}
 
 # ----------------- Tasks endpoints -----------------
 

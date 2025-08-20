@@ -2,6 +2,7 @@
 # Always fetches the Obsidian vault from GitHub (ZIP snapshot) and (re)builds FAISS.
 # Requires env: GITHUB_OWNER, GITHUB_REPO, GITHUB_TOKEN, and GITHUB_REF (or GITHUB_BRANCH)
 import os
+from pathlib import Path
 import re
 import gc
 import sys
@@ -26,10 +27,11 @@ import faiss
 
 from github_fetch import fetch_repo_snapshot  # <- we rely on this
 
-DATA_DIR = "./data"
-INDEX_PATH = os.path.join(DATA_DIR, "index.faiss")
-DOCS_PATH = os.path.join(DATA_DIR, "docs.pkl")
-SQLITE_PATH = os.path.join(DATA_DIR, "docs.sqlite")
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = str(BASE_DIR / "data")
+INDEX_PATH = str(BASE_DIR / "data" / "index.faiss")
+DOCS_PATH = str(BASE_DIR / "data" / "docs.pkl")
+SQLITE_PATH = str(BASE_DIR / "data" / "docs.sqlite")
 
 # ---------- text utils ----------
 

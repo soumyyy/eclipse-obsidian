@@ -6,10 +6,13 @@ import Sound from "@/components/Sound";
 import HUD from "@/components/HUD";
 import TasksDrawer from "@/components/TasksDrawer";
 
+type FileAttachment = { name: string; type: string };
 type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   sources?: { path: string; score: number }[];
+  attachments?: FileAttachment[];
+  formatted?: boolean;
 };
 
 export default function Home() {
@@ -18,8 +21,23 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [healthy, setHealthy] = useState<boolean | null>(null);
+  const [sessionId] = useState<string>(() => {
+    try {
+      const existing = (typeof window !== 'undefined' && localStorage.getItem('eclipse_session_id')) || '';
+      if (existing) return existing;
+      const sid = (typeof crypto !== 'undefined' && 'randomUUID' in crypto) ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+      if (typeof window !== 'undefined') localStorage.setItem('eclipse_session_id', sid);
+      return sid;
+    } catch {
+      return Math.random().toString(36).slice(2);
+    }
+  });
   const listRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const dropRef = useRef<HTMLDivElement | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
@@ -72,6 +90,11 @@ export default function Home() {
     setInput("");
     setLoading(true);
     try {
+      // If there are pending files, upload first and show chips as a message
+      if (pendingFiles.length > 0) {
+        await uploadFiles(pendingFiles);
+        setPendingFiles([]);
+      }
       // Slash commands to persist memories/tasks explicitly
       let save_fact: string | undefined;
       let make_note: string | undefined;
@@ -88,18 +111,20 @@ export default function Home() {
       const resp = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: "soumya", message: userMsg.content, save_fact, make_note, save_task }),
+        body: JSON.stringify({ user_id: "soumya", message: userMsg.content, save_fact, make_note, save_task, session_id: sessionId }),
       });
       if (!resp.ok || !resp.body) {
         const data = await resp.json().catch(() => ({}));
         throw new Error((data as any)?.error || "Server error");
       }
       // Insert a live assistant placeholder for streaming updates
-      setMessages((m) => [...m, { role: "assistant", content: "" }]);
+      setMessages((m) => [...m, { role: "assistant", content: "", formatted: false }]);
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let acc = "";
       let assistantContent = "";
+      let finalSources: { path: string; score: number }[] | undefined;
+      let finalMd: string | undefined;
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -112,14 +137,49 @@ export default function Home() {
           if (chunk === "[DONE]") {
             continue;
           }
+          if (chunk.startsWith("{")) {
+            try {
+              const meta = JSON.parse(chunk);
+              if (meta?.type === 'meta' && Array.isArray(meta?.sources)) {
+                finalSources = meta.sources as any;
+                continue;
+              }
+              if (meta?.type === 'final_md' && typeof meta?.content === 'string') {
+                finalMd = meta.content as string;
+                // Immediately replace last assistant message with final content
+                setMessages((m) => {
+                  const out = [...m];
+                  if (out[out.length - 1]?.role === 'assistant') out[out.length - 1] = { role: 'assistant', content: finalMd, formatted: true } as any;
+                  return out;
+                });
+                continue;
+              }
+            } catch {}
+          }
           assistantContent += chunk;
           // live token rendering
           setMessages((m) => {
             const out = [...m];
-            if (out[out.length - 1]?.role === "assistant") out[out.length - 1] = { role: "assistant", content: assistantContent } as ChatMessage;
+            if (out[out.length - 1]?.role === "assistant") out[out.length - 1] = { role: "assistant", content: assistantContent, formatted: false } as ChatMessage;
             return out;
           });
         }
+      }
+      // attach sources and final formatted markdown once stream ends
+      if (finalSources) {
+        setMessages((m) => {
+          const out = [...m];
+          const last = out[out.length - 1];
+          if (last?.role === 'assistant') out[out.length - 1] = { ...(last as any), sources: finalSources };
+          return out;
+        });
+      }
+      if (finalMd) {
+        setMessages((m) => {
+          const out = [...m];
+          if (out[out.length - 1]?.role === 'assistant') out[out.length - 1] = { role: 'assistant', content: finalMd, formatted: true } as any;
+          return out;
+        });
       }
     } catch (err: any) {
       setMessages((m) => [...m, { role: "assistant", content: `Error: ${err?.message || err}` }]);
@@ -134,8 +194,64 @@ export default function Home() {
     inputRef.current?.focus();
   }
 
+  // Drag & drop uploads (PDF/MD) — ephemeral per-session
+  async function uploadFiles(files: File[]) {
+    if (!files || files.length === 0) return;
+    const form = new FormData();
+    form.append('session_id', sessionId);
+    for (const f of files) form.append('files', f);
+    try {
+      const r = await fetch('/api/upload', { method: 'POST', body: form });
+      const d = await r.json();
+      if (!r.ok || !d?.ok) throw new Error(d?.error || 'Upload failed');
+      // show attachments as a chat message with chips
+      const atts: FileAttachment[] = files.map(f => ({ name: f.name, type: f.type || 'application/octet-stream' }));
+      setMessages((m) => [...m, { role: 'user', content: "", attachments: atts }]);
+    } catch (e: any) {
+      setMessages((m) => [...m, { role: 'assistant', content: `Upload error: ${e?.message || e}` }]);
+    }
+  }
+
+  useEffect(() => {
+    const el = dropRef.current || document;
+    const onDragOver = (e: DragEvent) => { e.preventDefault(); setDragOver(true); };
+    const onDragLeave = (e: DragEvent) => { e.preventDefault(); setDragOver(false); };
+    const onDrop = async (e: DragEvent) => {
+      e.preventDefault(); setDragOver(false);
+      const files = Array.from(e.dataTransfer?.files || []);
+      if (!files.length) return;
+      uploadFiles(files);
+    };
+    const onPaste = async (e: ClipboardEvent) => {
+      if (!e.clipboardData) return;
+      const files = Array.from(e.clipboardData.files || []);
+      if (files.length > 0) {
+        e.preventDefault();
+        setPendingFiles((prev) => [...prev, ...files]);
+        return;
+      }
+      const text = e.clipboardData.getData('text/plain');
+      if (text && text.trim().length > 0) {
+        // Treat pasted text as a markdown file
+        e.preventDefault();
+        const md = new File([text], 'pasted.md', { type: 'text/markdown' });
+        setPendingFiles((prev) => [...prev, md]);
+      }
+    };
+    el.addEventListener('dragover', onDragOver as any);
+    el.addEventListener('dragleave', onDragLeave as any);
+    el.addEventListener('drop', onDrop as any);
+    el.addEventListener('paste', onPaste as any);
+    return () => {
+      el.removeEventListener('dragover', onDragOver as any);
+      el.removeEventListener('dragleave', onDragLeave as any);
+      el.removeEventListener('drop', onDrop as any);
+      el.removeEventListener('paste', onPaste as any);
+    };
+  }, [sessionId]);
+
   return (
-    <div className="min-h-dvh flex flex-col bg-black relative">
+    <div ref={dropRef} className={"min-h-dvh flex flex-col bg-black relative " + (dragOver ? "outline-2 outline-cyan-500/60" : "") }>
       <HUD />
       <header className="border-b border-white/10 sticky top-0 bg-black/50 backdrop-blur z-10">
         <div className="max-w-5xl mx-auto px-2 lg:px-4 py-2 flex items-center justify-between">
@@ -179,7 +295,7 @@ export default function Home() {
       </header>
 
       <main className="flex-1">
-        <div ref={listRef} className="scrollbar-thin max-w-5xl mx-auto px-2 lg:px-4 py-4 space-y-3 overflow-y-auto" style={{ maxHeight: "calc(100dvh - 140px)", scrollbarGutter: "stable both-edges" }}>
+        <div ref={listRef} className="scrollbar-thin max-w-5xl mx-auto px-3 lg:px-6 py-5 space-y-3.5 overflow-y-auto" style={{ maxHeight: "calc(100dvh - 140px)", scrollbarGutter: "stable both-edges" }}>
           {messages.map((m, i) => (
             <Message key={i} role={m.role} content={m.content} sources={m.sources} />
           ))}
@@ -193,19 +309,66 @@ export default function Home() {
 
       <form onSubmit={sendMessage} className="sticky bottom-0 border-t border-white/10 bg-black/60 backdrop-blur">
         <div className="max-w-5xl mx-auto px-2 lg:px-4 py-2 flex gap-2">
+          <div className="flex-1 min-w-0">
+            {pendingFiles.length > 0 && (
+              <div className="flex flex-wrap gap-1 mb-1">
+                {pendingFiles.map((f, i) => (
+                  <span key={i} className="inline-flex items-center gap-1 text-xs bg-white/10 border border-white/10 rounded-full px-2 py-0.5">
+                    <span className="inline-block w-3 h-3 rounded bg-white/80" aria-hidden />
+                    <span className="truncate max-w-[12rem]" title={f.name}>{f.name}</span>
+                    <button
+                      type="button"
+                      aria-label={`Remove ${f.name}`}
+                      onClick={() => setPendingFiles(prev => prev.filter((_, idx) => idx !== i))}
+                      className="opacity-70 hover:opacity-100"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <input
+              id="chat-input"
+              name="chat-input"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  sendMessage();
+                }
+              }}
+              placeholder={loading ? "Waiting for reply..." : "Ask anything about your vault"}
+              ref={inputRef}
+              className="w-full rounded-2xl bg-black/50 text-neutral-100 border border-white/10 px-3 py-2 outline-none focus:ring-2 focus:ring-cyan-700/50 backdrop-blur placeholder:text-neutral-500"
+            />
+          </div>
           <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-              }
+            type="file"
+            accept=".pdf,.md,.markdown,text/markdown,text/plain,application/pdf"
+            multiple
+            ref={fileInputRef}
+            id="file-upload"
+            name="file-upload"
+            onChange={(e) => {
+              const files = Array.from(e.target.files || []);
+              if (files.length) uploadFiles(files);
+              // reset so selecting same file again re-triggers change
+              if (fileInputRef.current) fileInputRef.current.value = "";
             }}
-            placeholder={loading ? "Waiting for reply..." : "Ask anything about your vault"}
-            ref={inputRef}
-            className="flex-1 rounded-2xl bg-black/50 text-neutral-100 border border-white/10 px-3 py-2 outline-none focus:ring-2 focus:ring-cyan-700/50 backdrop-blur placeholder:text-neutral-500"
+            className="hidden"
           />
+          <button
+            type="button"
+            aria-label="Upload files"
+            title="Upload files"
+            disabled={loading}
+            onClick={() => fileInputRef.current?.click()}
+            className="rounded-2xl px-3 py-2 bg-white/10 text-white border border-white/10 hover:bg-white/20"
+          >
+            +
+          </button>
           {/https?:\/\//.test(input.trim()) && (
             <button
               type="button"

@@ -1,9 +1,11 @@
 # memory.py
 import os, sqlite3, time
+from pathlib import Path
 from typing import List, Tuple, Optional
 
-DATA_DIR = "./data"
-DB_PATH = os.path.join(DATA_DIR, "memory.sqlite")
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = str(BASE_DIR / "data")
+DB_PATH = str(BASE_DIR / "data" / "memory.sqlite")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (
@@ -180,6 +182,27 @@ def add_fact(user_id: str, content: str) -> int:
 
 def add_summary(user_id: str, content: str) -> int:
     return add_memory(user_id, content, mtype="summary")
+
+# ---- simple memory search (LIKE) ----
+
+def search_memories(user_id: str, query: str, limit: int = 20):
+    """Return memory rows matching the query in content or type.
+    Each item: {id, ts, type, content}
+    """
+    q = (query or "").strip()
+    if not q:
+        return []
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cur = con.cursor()
+        cur.execute(
+            "SELECT id, ts, type, content FROM memories WHERE user_id=? AND (content LIKE ? OR type LIKE ?) ORDER BY ts DESC LIMIT ?",
+            (user_id, f"%{q}%", f"%{q}%", limit),
+        )
+        rows = cur.fetchall()
+        return [{"id": r[0], "ts": r[1], "type": r[2], "content": r[3]} for r in rows]
+    finally:
+        con.close()
 
 # ---- tasks API ----
 
