@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Eclipse",
-  description: "Eclipse – Iron-black RAG assistant",
+  description: "Eclipse – Soumya's Personal AI Assistant",
 };
 
 export default function RootLayout({

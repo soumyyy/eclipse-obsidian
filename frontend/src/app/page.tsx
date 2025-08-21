@@ -1,10 +1,10 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import Message from "@/components/Message";
-import TypingBeam from "@/components/TypingBeam";
 import Sound from "@/components/Sound";
 import HUD from "@/components/HUD";
 import TasksDrawer from "@/components/TasksDrawer";
+import { Plus, Mic, SendHorizonal } from "lucide-react";
 
 type FileAttachment = { name: string; type: string };
 type ChatMessage = {
@@ -33,11 +33,17 @@ export default function Home() {
     }
   });
   const listRef = useRef<HTMLDivElement | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const dropRef = useRef<HTMLDivElement | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [recording, setRecording] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const [transcribing, setTranscribing] = useState(false);
+  const [transcribingDots, setTranscribingDots] = useState("");
+  const transcribeIntervalRef = useRef<any>(null);
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
@@ -77,10 +83,15 @@ export default function Home() {
         // Notify TasksDrawer to toggle
         window.dispatchEvent(new CustomEvent('toggle-todo'));
       }
+      // Mic hotkeys: Cmd+M, F2, or F5 toggle recording
+      if ((mod && e.key.toLowerCase() === 'm') || e.key === 'F2' || e.key === 'F5') {
+        e.preventDefault();
+        if (recording) stopRecording(); else startRecording();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [recording]);
 
   async function sendMessage(e?: React.FormEvent) {
     if (e) e.preventDefault();
@@ -188,6 +199,56 @@ export default function Home() {
     }
   }
 
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordedChunksRef.current = [];
+      const mr = new MediaRecorder(stream);
+      mediaRecorderRef.current = mr;
+      mr.ondataavailable = (evt) => {
+        if (evt.data && evt.data.size > 0) recordedChunksRef.current.push(evt.data);
+      };
+      mr.onstop = async () => {
+        setTranscribing(true);
+        try { clearInterval(transcribeIntervalRef.current); } catch {}
+        transcribeIntervalRef.current = setInterval(() => {
+          setTranscribingDots((d) => (d.length >= 3 ? "" : d + "."));
+        }, 350);
+        try {
+          const blob = new Blob(recordedChunksRef.current, { type: mr.mimeType || 'audio/webm' });
+          const form = new FormData();
+          form.append('audio', blob, 'audio.webm');
+          const resp = await fetch('/api/transcribe', { method: 'POST', body: form });
+          const data = await resp.json();
+          if (!resp.ok) throw new Error((data as any)?.error || 'Transcription failed');
+          const txt = (data as any)?.text || '';
+          setInput((prev) => (prev ? prev + ' ' + txt : txt));
+          inputRef.current?.focus();
+        } catch (err: any) {
+          console.error(err);
+        } finally {
+          // release tracks
+          stream.getTracks().forEach(t => t.stop());
+          setTranscribing(false);
+          try { clearInterval(transcribeIntervalRef.current); } catch {}
+          setTranscribingDots("");
+        }
+      };
+      mr.start();
+      setRecording(true);
+    } catch (err) {
+      console.error(err);
+      setRecording(false);
+    }
+  }
+
+  function stopRecording() {
+    try {
+      mediaRecorderRef.current?.stop();
+    } catch {}
+    setRecording(false);
+  }
+
   function clearChat() {
     setMessages([]);
     try { if (typeof window !== "undefined") localStorage.removeItem(STORAGE_KEY); } catch {}
@@ -254,8 +315,7 @@ export default function Home() {
     <div ref={dropRef} className={"min-h-dvh flex flex-col bg-black relative " + (dragOver ? "outline-2 outline-cyan-500/60" : "") }>
       <HUD />
       <header className="border-b border-white/10 sticky top-0 bg-black/50 backdrop-blur z-10">
-        <div className="max-w-5xl mx-auto px-2 lg:px-4 py-2 flex items-center justify-between">
-          <div className="font-medium tracking-tight text-neutral-200">Eclipse</div>
+        <div className="max-w-5xl mx-auto px-2 lg:px-4 py-2 flex items-center justify-center gap-4">
           <div className="flex items-center gap-3">
             <TasksDrawer userId="soumya" asHeader />
             <a href="/memories" className="text-xs text-neutral-400 hover:text-neutral-100 transition">Memories</a>
@@ -299,17 +359,26 @@ export default function Home() {
           {messages.map((m, i) => (
             <Message key={i} role={m.role} content={m.content} sources={m.sources} />
           ))}
-          {loading && (
-            <div className="px-4">
-              <TypingBeam />
-            </div>
-          )}
+          {/* Removed in-message typing loader for minimal design */}
         </div>
       </main>
 
-      <form onSubmit={sendMessage} className="sticky bottom-0 border-t border-white/10 bg-black/60 backdrop-blur">
-        <div className="max-w-5xl mx-auto px-2 lg:px-4 py-2 flex gap-2">
-          <div className="flex-1 min-w-0">
+      {/* Floating input bar */}
+      <div className="fixed bottom-4 inset-x-0 px-3 pointer-events-none">
+        <form onSubmit={sendMessage} className="max-w-3xl mx-auto pointer-events-auto">
+          <div className="relative rounded-full border border-white/10 bg-black/60 backdrop-blur shadow-lg flex items-center gap-2 px-2 py-1.5">
+            {loading && <div className="loading-underline" />}
+            <button
+              type="button"
+              aria-label="Upload files"
+              title="Upload files"
+              disabled={loading}
+              onClick={() => fileInputRef.current?.click()}
+              className="inline-flex items-center justify-center w-8 h-8 rounded-full text-neutral-300 hover:text-white hover:bg-white/10"
+            >
+              <Plus size={18} />
+            </button>
+            <div className="flex-1 min-w-0 relative">
             {pendingFiles.length > 0 && (
               <div className="flex flex-wrap gap-1 mb-1">
                 {pendingFiles.map((f, i) => (
@@ -328,22 +397,38 @@ export default function Home() {
                 ))}
               </div>
             )}
-            <input
+            <textarea
               id="chat-input"
               name="chat-input"
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                setInput(e.target.value);
+                // auto-resize
+                const el = inputRef.current;
+                if (el) {
+                  el.style.height = 'auto';
+                  const max = 160; // px max
+                  el.style.height = Math.min(el.scrollHeight, max) + 'px';
+                }
+              }}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
+                // Enter to send; Shift+Enter inserts newline
+                if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
                   sendMessage();
                 }
               }}
-              placeholder={loading ? "Waiting for reply..." : "Ask anything about your vault"}
+              placeholder={loading ? "Waiting for reply..." : "Hey soumya"}
               ref={inputRef}
-              className="w-full rounded-2xl bg-black/50 text-neutral-100 border border-white/10 px-3 py-2 outline-none focus:ring-2 focus:ring-cyan-700/50 backdrop-blur placeholder:text-neutral-500"
+              rows={1}
+              className="w-full bg-transparent text-neutral-100 px-2 py-1.5 pr-12 outline-none placeholder:text-neutral-500 resize-none overflow-y-auto"
             />
-          </div>
+            {transcribing && (
+              <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-neutral-500">
+                Transcribing{transcribingDots}
+              </span>
+            )}
+            </div>
           <input
             type="file"
             accept=".pdf,.md,.markdown,text/markdown,text/plain,application/pdf"
@@ -359,45 +444,27 @@ export default function Home() {
             }}
             className="hidden"
           />
-          <button
-            type="button"
-            aria-label="Upload files"
-            title="Upload files"
-            disabled={loading}
-            onClick={() => fileInputRef.current?.click()}
-            className="rounded-2xl px-3 py-2 bg-white/10 text-white border border-white/10 hover:bg-white/20"
-          >
-            +
-          </button>
-          {/https?:\/\//.test(input.trim()) && (
             <button
               type="button"
-              disabled={loading}
-              onClick={async () => {
-                try {
-                  const resp = await fetch("/api/summarize-url", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: input.trim(), user_id: "soumya" }) });
-                  const data = await resp.json();
-                  if (!resp.ok) throw new Error(data?.error || "Summarize failed");
-                  setMessages((m) => [...m, { role: "assistant", content: `# ${data.title || "Summary"}\n\n${data.summary || ""}` }]);
-                  setInput("");
-                } catch (e: any) {
-                  setMessages((m) => [...m, { role: "assistant", content: `Error: ${e?.message || e}` }]);
-                }
-              }}
-              className="rounded-2xl px-3 py-2 bg-white/10 text-white border border-white/10 hover:bg-white/20"
+              aria-label={recording ? "Stop recording" : "Start recording"}
+              title={recording ? "Stop recording" : "Start recording (F5 / F2 / Cmd+M)"}
+              onClick={() => { if (recording) stopRecording(); else startRecording(); }}
+              className={"inline-flex items-center justify-center w-8 h-8 rounded-full " + (recording ? "bg-red-600 text-white" : "text-neutral-300 hover:text-white hover:bg-white/10")}
             >
-              Summarize URL
+              <Mic size={18} />
             </button>
-          )}
-          <button
-            type="submit"
-            disabled={loading}
-            className="rounded-2xl px-4 py-2 bg-white/90 text-black disabled:opacity-50 hover:bg-white transition"
-          >
-            {loading ? "Sending..." : "Send"}
-          </button>
-        </div>
-      </form>
+            <button
+              type="submit"
+              disabled={loading}
+              aria-label="Send"
+              title="Send"
+              className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-white text-black disabled:opacity-50 hover:bg-neutral-200"
+            >
+              <SendHorizonal size={18} />
+            </button>
+          </div>
+        </form>
+      </div>
       <Sound play={messages[messages.length - 1]?.role === "assistant"} />
     </div>
   );

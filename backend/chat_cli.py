@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 import os, sys, json, readline, requests
+from pathlib import Path
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except Exception:
+    pass
 
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://127.0.0.1:8000")
 API_KEY = os.environ.get("BACKEND_API_KEY", os.environ.get("BACKEND_TOKEN", ""))

@@ -39,7 +39,7 @@ export default function Message({ role, content, formatted }: MessageProps) {
           "relative max-w-[85%] rounded-2xl border shadow-sm",
           isUser
             ? "px-5 sm:px-6 py-3.5 border-cyan-500/30 bg-cyan-950/20" 
-            : "px-6 sm:px-7 py-4 border-white/10 bg-gray-900/25",
+            : "px-6 sm:px-7 py-4 border-white/10 bg-gray-900/25 animate-slide-in-up",
         ].join(" ")}
       >
         {isUser ? (
