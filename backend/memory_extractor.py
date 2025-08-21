@@ -119,7 +119,7 @@ def _detect_task_trigger(user_msg: str) -> bool:
 
 def extract_memories(user_id: str, user_msg: str, assistant_reply: str, recent_turns: Optional[List[Dict]] = None, top_snippets: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     messages = _build_prompt(user_msg, assistant_reply, recent_turns, top_snippets)
-    raw = cerebras_chat_with_model(messages, model=None, temperature=0.0, max_tokens=400)
+    raw = cerebras_chat_with_model(messages, model=None, temperature=0.0, max_tokens=800)
     data = _safe_json_parse(raw) or {"memories": []}
     out: List[Dict[str, Any]] = []
     for m in data.get("memories", []) or []:
@@ -166,7 +166,7 @@ def extract_memories(user_id: str, user_msg: str, assistant_reply: str, recent_t
                 {"role": "system", "content": sys2},
                 {"role": "user", "content": f"USER: {user_msg}"},
             ]
-            raw2 = cerebras_chat_with_model(messages2, model=os.getenv("EXTRACTOR_FALLBACK_MODEL") or None, temperature=0.0, max_tokens=300)
+            raw2 = cerebras_chat_with_model(messages2, model=os.getenv("EXTRACTOR_FALLBACK_MODEL") or None, temperature=0.0, max_tokens=600)
             data2 = _safe_json_parse(raw2) or {"memories": []}
             for m in data2.get("memories", []) or []:
                 mtype = _normalize_type(m.get("type", "").strip())

@@ -13,6 +13,7 @@ export interface MessageProps {
   content: string;
   sources?: { path: string; score: number }[];
   formatted?: boolean;
+  attachments?: { name: string; type: string }[];
 }
 
 function normalizeLLMMarkdown(input: string): string {
@@ -26,11 +27,26 @@ function normalizeLLMMarkdown(input: string): string {
   return text.trim();
 }
 
-export default function Message({ role, content, formatted }: MessageProps) {
+// File icon component for different file types
+function FileIcon({ file }: { file: { name: string; type: string } }) {
+  const ext = file.name.split('.').pop()?.toLowerCase();
+  const type = file.type;
+  
+  if (type.includes('pdf') || ext === 'pdf') {
+    return <div className="w-5 h-5 bg-red-500 rounded flex items-center justify-center text-white text-xs font-bold">PDF</div>;
+  }
+  if (type.includes('markdown') || ext === 'md' || ext === 'markdown') {
+    return <div className="w-5 h-5 bg-blue-500 rounded flex items-center justify-center text-white text-xs font-bold">MD</div>;
+  }
+  if (type.includes('text') || ext === 'txt') {
+    return <div className="w-5 h-5 bg-green-500 rounded flex items-center justify-center text-white text-xs font-bold">TXT</div>;
+  }
+  return <div className="w-5 h-5 bg-gray-500 rounded flex items-center justify-center text-white text-xs font-bold">FILE</div>;
+}
+
+export default function Message({ role, content, formatted, attachments }: MessageProps) {
   const isUser = role === "user";
   const normalized = React.useMemo(() => (isUser || formatted ? content : normalizeLLMMarkdown(content)), [content, isUser, formatted]);
-
-  // joinInline removed per simplification; headings render children directly
 
   return (
     <div className={isUser ? "flex justify-end" : "flex justify-start"}>
@@ -43,9 +59,23 @@ export default function Message({ role, content, formatted }: MessageProps) {
         ].join(" ")}
       >
         {isUser ? (
-          <pre className="whitespace-pre-wrap break-words text-sm text-neutral-100">
-            {content}
-          </pre>
+          <div>
+            {attachments && attachments.length > 0 && (
+              <div className="mb-3 flex flex-wrap gap-2">
+                {attachments.map((file, i) => (
+                  <div key={i} className="inline-flex items-center gap-2 text-sm bg-white/5 border border-white/20 rounded-lg px-3 py-2 backdrop-blur-sm">
+                    <FileIcon file={file} />
+                    <span className="text-neutral-100 font-medium">{file.name}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {content && (
+              <pre className="whitespace-pre-wrap break-words text-sm text-neutral-100">
+                {content}
+              </pre>
+            )}
+          </div>
         ) : (
           <ReactMarkdown
             className="prose prose-invert prose-sm max-w-none"
