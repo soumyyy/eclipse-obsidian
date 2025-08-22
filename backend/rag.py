@@ -163,7 +163,11 @@ class RAG:
 
         merged = list(rrf.values())
         merged.sort(key=lambda x: x.get("score", 0.0), reverse=True)
-        return merged[: self.top_k]
+        
+        # Filter out very low relevance results
+        filtered = [h for h in merged if h.get("score", 0.0) > 0.01]
+        
+        return filtered[: self.top_k]
 
     def build_context(self, query: str):
         # returns (context_str, hits) using hybrid retrieval

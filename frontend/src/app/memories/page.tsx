@@ -1,176 +1,289 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
 
-type Mem = { id: number; ts: number; type: string; content: string };
-type Pending = { id: number; ts?: number; type: string; content: string };
+import { useState, useEffect } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { 
+  Trash2, 
+  Edit, 
+  Save, 
+  X, 
+  RefreshCw
+} from "lucide-react";
+
+interface Memory {
+  id: number;
+  content: string;
+  type: string;
+  created_at: string;
+  priority: number;
+  confidence: number;
+}
+
+interface MaintenanceStats {
+  consolidations: number;
+  enhancements: number;
+  total_memories: number;
+}
 
 export default function MemoriesPage() {
-  const userId = "soumya";
-  const [items, setItems] = useState<Mem[]>([]);
-  const [pending, setPending] = useState<Pending[]>([]);
-  const [q, setQ] = useState("");
-  const [type, setType] = useState<string>("");
-  const [loading, setLoading] = useState(false);
+  const [memories, setMemories] = useState<Memory[]>([]);
+  const [searchTerm, setSearchTerm] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [menuOpenId, setMenuOpenId] = useState<number | null>(null);
-  const [draftContent, setDraftContent] = useState<Record<number, string>>({});
-  const [draftType, setDraftType] = useState<Record<number, string>>({});
-
-  async function load() {
-    setLoading(true);
-    const u = new URL("/api/memories", location.origin);
-    u.searchParams.set("user_id", userId);
-    u.searchParams.set("limit", "1000");
-    if (q) u.searchParams.set("contains", q);
-    if (type) u.searchParams.set("type", type);
-    const r = await fetch(u.toString(), { cache: "no-store" });
-    const d = await r.json();
-    if (d.ok) setItems(d.items || []);
-    // Load pending suggestions too
-    try {
-      const pr = await fetch(`/api/memories/pending?user_id=${encodeURIComponent(userId)}&limit=100`, { cache: "no-store" });
-      const pd = await pr.json();
-      if (pd.ok) setPending(pd.items || []);
-    } catch {}
-    setLoading(false);
-  }
+  const [editContent, setEditContent] = useState("");
+  const [isMaintenanceRunning, setIsMaintenanceRunning] = useState(false);
+  const [maintenanceStats, setMaintenanceStats] = useState<MaintenanceStats | null>(null);
 
   useEffect(() => {
-    load();
-    const onVis = () => { if (!document.hidden) load(); };
-    window.addEventListener("visibilitychange", onVis);
-    window.addEventListener("focus", onVis);
-    return () => {
-      window.removeEventListener("visibilitychange", onVis);
-      window.removeEventListener("focus", onVis);
-    };
+    fetchMemories();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function save(mem: Mem) {
-    const r = await fetch("/api/memories", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mem_id: mem.id, user_id: userId, content: mem.content, type: mem.type }) });
-    const d = await r.json();
-    if (d.ok) {
-      setEditingId(null);
-      setDraftContent((prev) => { const n = { ...prev }; delete n[mem.id]; return n; });
-      setDraftType((prev) => { const n = { ...prev }; delete n[mem.id]; return n; });
-      load();
+  const fetchMemories = async () => {
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/memories?user_id=soumya`, {
+        headers: {
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+        }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setMemories(data.items || []);
+      }
+    } catch (error) {
+      console.error("Error fetching memories:", error);
     }
-  }
+  };
 
-  async function remove(id: number) {
-    const r = await fetch("/api/memories", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mem_id: id, user_id: userId, action: "delete" }) });
-    const d = await r.json();
-    if (d.ok) setItems((prev) => prev.filter((m) => m.id !== id));
-  }
+  const runMemoryMaintenance = async () => {
+    setIsMaintenanceRunning(true);
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/admin/memory/maintenance`, { 
+        method: "POST",
+        headers: {
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+        }
+      });
+      const data = await response.json();
+      if (response.ok && data?.ok) {
+        setMaintenanceStats(data.stats);
+        setTimeout(() => fetchMemories(), 1000);
+      } else {
+        throw new Error(data?.error || "Maintenance failed");
+      }
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      console.error("Memory maintenance error:", errorMessage);
+    } finally {
+      setIsMaintenanceRunning(false);
+    }
+  };
 
-  async function approve(pid: number) {
-    const r = await fetch(`/api/memories/pending/${pid}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: userId }) });
-    const d = await r.json();
-    if (d.ok) load();
-  }
+  const deleteMemory = async (memoryId: number) => {
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/memories/${memoryId}`, {
+        method: "DELETE",
+        headers: {
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+        }
+      });
+      
+      if (response.ok) {
+        // Remove the deleted memory from the local state
+        setMemories(memories.filter(memory => memory.id !== memoryId));
+      } else {
+        const data = await response.json();
+        throw new Error(data?.error || "Failed to delete memory");
+      }
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      console.error("Error deleting memory:", errorMessage);
+      alert(`Failed to delete memory: ${errorMessage}`);
+    }
+  };
 
-  async function reject(pid: number) {
-    const r = await fetch(`/api/memories/pending/${pid}/reject`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: userId }) });
-    const d = await r.json();
-    if (d.ok) setPending((prev) => prev.filter((p) => p.id !== pid));
-  }
+  const filteredMemories = memories.filter(memory =>
+    (memory.content || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (memory.type || '').toLowerCase().includes(searchTerm.toLowerCase())
+  );
 
-  async function deleteAll() {
-    if (!confirm("Delete all memories?")) return;
-    const r = await fetch("/api/memories", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: userId, action: "delete_all" }) });
-    const d = await r.json();
-    if (d.ok) load();
-  }
-
-  const merged = useMemo(() => {
-    // Combine pending and saved into a single chronological list
-    const saved = items.map((m) => ({
-      kind: "saved" as const,
-      id: m.id,
-      ts: m.ts || 0,
-      type: m.type,
-      content: m.content,
-      raw: m,
-    }));
-    const pend = pending.map((p) => ({
-      kind: "pending" as const,
-      id: p.id,
-      ts: p.ts || 0,
-      type: p.type,
-      content: p.content,
-      raw: p,
-    }));
-    return [...saved, ...pend].sort((a, b) => (b.ts || 0) - (a.ts || 0));
-  }, [items, pending]);
+  const getPriorityColor = (priority: number) => {
+    switch (priority) {
+      case 1: return "bg-red-500/20 text-red-300 border-red-500/30";
+      case 2: return "bg-yellow-500/20 text-yellow-300 border-yellow-500/30";
+      case 3: return "bg-gray-800 text-gray-300 border-gray-600";
+      default: return "bg-gray-700 text-gray-300 border-gray-600";
+    }
+  };
 
   return (
-    <div className="min-h-dvh bg-[#0b0c10] text-neutral-100">
-      <header className="border-b border-white/10 sticky top-0 bg-black/40 backdrop-blur z-10">
-        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="font-semibold tracking-tight">Memories</div>
-          <a href="/" className="text-xs text-neutral-400 hover:text-neutral-100">Back</a>
-        </div>
-      </header>
-      <main className="max-w-5xl mx-auto px-4 py-6 space-y-6">
-        <div className="flex gap-2 items-center">
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search..." className="flex-1 bg-black/40 border border-white/10 rounded px-2 py-2 text-sm" />
-          <select value={type} onChange={(e) => setType(e.target.value)} className="bg-black/40 border border-white/10 rounded px-2 py-2 text-sm">
-            <option value="">All</option>
-            <option value="fact">Fact</option>
-            <option value="note">Note</option>
-            <option value="summary">Summary</option>
-          </select>
-          <button onClick={load} className="text-xs px-3 py-2 rounded bg-white/10 border border-white/10">Filter</button>
-          <button onClick={deleteAll} className="text-xs px-3 py-2 rounded bg-red-600/20 border border-red-500/30 text-red-300">Delete all</button>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {merged.map((row) => (
-            <div key={`${row.kind}-${row.id}`} className="rounded-2xl border border-white/10 bg-black/50 p-3 space-y-2">
-              <div className="flex items-center gap-2">
-                <span className={`text-[10px] px-2 py-0.5 rounded border ${row.kind === 'pending' ? 'border-amber-500/40 bg-amber-600/10 text-amber-300' : 'border-emerald-500/30 bg-emerald-600/10 text-emerald-300'}`}>{row.kind === 'pending' ? 'Pending' : 'Saved'}</span>
-                <div className="ml-auto flex items-center gap-2">
-                  {row.kind === 'pending' ? (
-                    <>
-                      <button onClick={() => approve(row.id)} className="px-2 py-1 text-[11px] rounded border border-amber-500/40 bg-amber-600/10 text-amber-200 hover:bg-amber-600/20">Approve</button>
-                      <button onClick={() => reject(row.id)} className="px-2 py-1 text-[11px] rounded border border-white/10 bg-white/5 text-neutral-300 hover:bg-white/10">Reject</button>
-                    </>
-                  ) : (
-                    <div className="relative">
-                      <button onClick={() => setMenuOpenId((cur) => (cur === row.id ? null : row.id))} className="px-2 py-1 text-xs rounded bg-white/10 border border-white/10">⋯</button>
-                      {menuOpenId === row.id && (
-                        <div className="absolute right-0 mt-1 w-32 rounded border border-white/10 bg-black/80 backdrop-blur p-1 text-xs space-y-1 z-10">
-                          <button onClick={() => { setEditingId(row.id); setMenuOpenId(null); }} className="w-full text-left px-2 py-1 hover:bg-white/10 rounded">Edit</button>
-                          <button onClick={() => { setMenuOpenId(null); remove(row.id); }} className="w-full text-left px-2 py-1 hover:bg-white/10 rounded text-red-300">Delete</button>
-                        </div>
-                      )}
-                    </div>
-                  )}
+    <div className="min-h-screen bg-black text-white p-6">
+      <div className="max-w-7xl mx-auto">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-8">
+          <div>
+            <h1 className="text-3xl font-bold text-white">
+              Memory & Sessions
+            </h1>
+            <p className="text-gray-400 mt-2">Manage your AI assistant&apos;s knowledge and chat sessions</p>
+          </div>
+          
+          {/* Memory Maintenance Button */}
+          <div className="flex items-center gap-4">
+            <Button
+              onClick={runMemoryMaintenance}
+              disabled={isMaintenanceRunning}
+              className="bg-gray-800 hover:bg-gray-700 text-white px-6 py-2 rounded-lg transition-colors border border-gray-600"
+            >
+              {isMaintenanceRunning ? (
+                <>
+                  <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                  Running...
+                </>
+              ) : (
+                <>
+                  Memory Maintenance
+                </>
+              )}
+            </Button>
+            
+            {maintenanceStats && (
+              <div className="bg-gray-800 rounded-lg p-3 border border-gray-600">
+                <div className="text-xs text-gray-300 mb-1">Last Maintenance</div>
+                <div className="text-sm">
+                  <span className="text-green-400">{maintenanceStats.consolidations}</span> merged,{" "}
+                  <span className="text-gray-400">{maintenanceStats.enhancements}</span> enhanced
                 </div>
               </div>
-              {row.kind === 'saved' ? (
-                editingId === row.id ? (
-                  <div className="space-y-2">
-                    <select value={draftType[row.id] ?? (row.raw as Mem).type} onChange={(e) => setDraftType((prev) => ({ ...prev, [row.id]: e.target.value }))} className="bg-black/40 border border-white/10 rounded px-2 py-1 text-xs">
-                      <option value="fact">fact</option>
-                      <option value="note">note</option>
-                      <option value="summary">summary</option>
-                    </select>
-                    <textarea value={draftContent[row.id] ?? (row.raw as Mem).content} onChange={(e) => setDraftContent((prev) => ({ ...prev, [row.id]: e.target.value }))} className="w-full bg-black/40 border border-white/10 rounded px-2 py-2 text-sm min-h-[120px]" />
-                    {((draftContent[row.id] ?? (row.raw as Mem).content) !== (row.raw as Mem).content || (draftType[row.id] ?? (row.raw as Mem).type) !== (row.raw as Mem).type) && (
-                      <button onClick={() => save({ id: row.id, ts: (row.raw as Mem).ts, type: (draftType[row.id] ?? (row.raw as Mem).type), content: (draftContent[row.id] ?? (row.raw as Mem).content) })} className="text-xs px-2 py-1 rounded bg-white/10 border border-white/10">Save</button>
+            )}
+          </div>
+        </div>
+
+        {/* Memories Content */}
+        <div className="w-full">
+          <div className="bg-black border border-black rounded-lg p-4">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-medium text-white">
+                Memories ({filteredMemories.length})
+              </h2>
+              <div className="relative">
+                <Input
+                  placeholder="Search memories..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="bg-gray-900 border-gray-700 text-white placeholder-gray-400 focus:border-gray-600 focus:ring-gray-600/20"
+                />
+              </div>
+            </div>
+            
+            {filteredMemories.length === 0 ? (
+              <div className="text-center py-12 text-gray-400">
+                <p className="text-lg font-medium">No memories found</p>
+                <p className="text-sm">Try adjusting your search or create new memories through chat</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {filteredMemories.map((memory) => (
+                  <div
+                    key={memory.id}
+                    className="bg-black border border-gray-800 rounded p-3 hover:bg-gray-900 transition-all duration-200"
+                  >
+                    {editingId === memory.id ? (
+                      <div className="space-y-3">
+                        <textarea
+                          value={editContent}
+                          onChange={(e) => setEditContent(e.target.value)}
+                          className="w-full bg-gray-900 border border-gray-700 rounded p-3 text-white placeholder-gray-400 focus:border-gray-600 focus:ring-gray-600/20 resize-none"
+                          rows={3}
+                        />
+                        <div className="flex items-center gap-2">
+                          <Button
+                            onClick={() => {
+                              setEditingId(null);
+                              setEditContent("");
+                            }}
+                            size="sm"
+                            className="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded transition-colors"
+                          >
+                            <Save className="w-4 h-4 mr-2" />
+                            Save
+                          </Button>
+                          <Button
+                            onClick={() => {
+                              setEditingId(null);
+                              setEditContent("");
+                            }}
+                            size="sm"
+                            variant="ghost"
+                            className="text-gray-400 hover:text-white hover:bg-gray-800 px-3 py-1.5 rounded transition-colors"
+                          >
+                            <X className="w-4 h-4 mr-2" />
+                            Cancel
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <div className="flex items-start justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <Badge className={getPriorityColor(memory.priority || 0)}>
+                              {memory.type || 'unknown'}
+                            </Badge>
+                          </div>
+                          
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <Button
+                              onClick={() => {
+                                setEditingId(memory.id);
+                                setEditContent(memory.content || '');
+                              }}
+                              size="sm"
+                              variant="ghost"
+                              className="text-gray-400 hover:text-white hover:bg-gray-800 p-1 rounded transition-colors"
+                            >
+                              <Edit className="w-4 h-4" />
+                            </Button>
+                          </div>
+                        </div>
+                        
+                        <p className="text-white leading-relaxed">{memory.content || 'No content'}</p>
+                        
+                        <div className="flex items-center justify-between mt-3">
+                          <span className="text-xs text-gray-500">
+                            {memory.created_at ? new Date(memory.created_at).toLocaleDateString() : 'Unknown date'}
+                          </span>
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => {
+                                setEditingId(memory.id);
+                                setEditContent(memory.content || '');
+                              }}
+                              className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                            >
+                              <Edit className="w-3 h-3" />
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (confirm('Are you sure you want to delete this memory?')) {
+                                  deleteMemory(memory.id);
+                                }
+                              }}
+                              className="p-1 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
                     )}
                   </div>
-                ) : (
-                  <div className="text-sm text-neutral-300 whitespace-pre-wrap">{(row.raw as Mem).content}</div>
-                )
-              ) : (
-                <div className="text-sm text-neutral-300 whitespace-pre-wrap">{row.content}</div>
-              )}
-            </div>
-          ))}
+                ))}
+              </div>
+            )}
+          </div>
         </div>
-        {!loading && items.length === 0 && <div className="text-sm text-neutral-500">No memories to show.</div>}
-      </main>
+      </div>
     </div>
   );
 }

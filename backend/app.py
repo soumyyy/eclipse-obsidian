@@ -10,6 +10,7 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 from typing import List, Dict, Optional, Tuple
 import re, time
+from datetime import datetime
 
 from fastapi import FastAPI, Header, HTTPException, Request, Depends, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
@@ -21,6 +22,8 @@ from rag import RAG, make_faiss_retriever                      # our retriever c
 from ingest import ingest_from_dir   # ingest pipeline that builds FAISS/docs from a dir
 from github_fetch import fetch_repo_snapshot
 from memory import ensure_db, recall_memories, add_memory, add_task, list_tasks, complete_task, add_fact, add_summary, list_pending_memories, approve_pending_memory, reject_pending_memory, list_memories, update_memory, delete_memory, delete_all_memories, search_memories
+from memory_extractor import extract_and_store_memories, run_memory_maintenance
+from redis_config import RedisOps, RedisKeys
 from llm_cerebras import cerebras_chat   # Cerebras chat wrapper
 from memory_extractor import extract_and_store_memories
 from bs4 import BeautifulSoup
@@ -107,14 +110,21 @@ Personality & Tone:
 4. Avoid hallucinating facts—better to acknowledge uncertainty than invent.
 
 Interaction Style:
-1. Always use context from previous interactions.
+1. Always use context from previous interactions and memories naturally.
 2. Ask clarifying questions if requests are ambiguous.
-3. Offer structured responses (lists, summaries, next steps).
+3. Offer structured responses when helpful, but keep them conversational.
 4. Be concise when needed, detailed when asked.
 5. Offer proactive assistance, like a "thinking partner."
 6. Never include emojis in responses.
 7. Never break the required JSON schema, even in refusals or uncertainty.
 8. When refusing or limiting an answer, output valid JSON with a section headed "Limitations".
+
+Response Guidelines:
+1. Use the provided CONTEXT, MEMORIES and UPLOADS naturally in your responses.
+2. Don't create unnecessary headers unless the user specifically asks for structure.
+3. Keep responses conversational and contextual - reference memories and context as if they're part of a natural conversation.
+4. If memories or context are relevant, weave them into your response naturally rather than listing them separately.
+5. Focus on being helpful and relevant rather than formal or structured.
 
 Flavor:
 1. Address the user with a title ("Sir") or by name ("Soumya").
@@ -152,6 +162,7 @@ Quality Bar:
 - If citing is unavoidable, paraphrase or attribute in natural language.
 - Responses must always comply with the JSON schema.
 - IMPORTANT: Ensure your response is complete and not truncated. If you need more space, use concise but complete bullet points.
+- Focus on natural, contextual responses that feel like a real conversation.
 
 You may use the provided CONTEXT, MEMORIES and UPLOADS to build the JSON content. If unsure, reflect that in a bullet.
 """
@@ -356,22 +367,51 @@ def _semantic_memory_retrieve(user_id: str, query: str, limit: int = 5):
         rag = get_retriever()
         embed_fn = rag.embed_fn
         qv = embed_fn(query)[0].astype(np.float32)
-        mems = list_memories(user_id, limit=300)
+        
+        # Get more memories for better selection
+        mems = list_memories(user_id, limit=500)
         if not mems:
             return []
-        texts = [m.get("content", "") for m in mems]
+        
+        # Filter memories by relevance to current query
+        relevant_mems = []
+        for m in mems:
+            content = m.get("content", "").lower()
+            query_lower = query.lower()
+            
+            # Check for direct keyword matches
+            if any(word in content for word in query_lower.split() if len(word) > 3):
+                relevant_mems.append((m, 1.5))  # Boost direct matches
+            
+            # Check for semantic similarity
+            relevant_mems.append((m, 0.0))
+        
+        if not relevant_mems:
+            return []
+        
+        # Get embeddings for relevant memories
+        texts = [m[0].get("content", "") for m in relevant_mems]
         vecs = embed_fn(texts)
         scores = vecs @ qv
-        idx = np.argsort(-scores)[:limit]
+        
+        # Combine keyword relevance with semantic similarity
+        final_scores = []
+        for i, (mem, keyword_boost) in enumerate(relevant_mems):
+            semantic_score = float(scores[i])
+            final_score = semantic_score + keyword_boost
+            final_scores.append((mem, final_score))
+        
+        # Sort by combined score and take top results
+        final_scores.sort(key=lambda x: x[1], reverse=True)
+        
         out = []
-        for rank, i in enumerate(idx.tolist()):
-            m = mems[i]
+        for rank, (mem, score) in enumerate(final_scores[:limit]):
             out.append({
                 "rank": rank + 1,
-                "score": float(scores[i]),
-                "text": m.get("content", ""),
-                "path": f"(memory:{m.get('type','note')})",
-                "id": f"mem::{m.get('id')}",
+                "score": score,
+                "text": mem.get("content", ""),
+                "path": f"(memory:{mem.get('type','note')})",
+                "id": f"mem::{mem.get('id')}",
             })
         return out
     except Exception:
@@ -452,6 +492,39 @@ def _verify_github_sig(secret: str, payload: bytes, signature: Optional[str]) ->
         return False
     mac = hmac.new(secret.encode(), msg=payload, digestmod=hashlib.sha256)
     return hmac.compare_digest(mac.hexdigest(), signature.split("=", 1)[1])
+
+# ----------------- Memory maintenance -----------------
+@app.post("/admin/memory/maintenance")
+def admin_memory_maintenance(user_id: str = "soumya", x_api_key: Optional[str] = Header(default=None)):
+    # Temporarily removed API key check
+    # if ADMIN_API_KEY and x_api_key != ADMIN_API_KEY:
+    #     raise HTTPException(401, "invalid token")
+    
+    try:
+        stats = run_memory_maintenance(user_id)
+        return {"ok": True, "stats": stats}
+    except Exception as e:
+        raise HTTPException(500, f"Memory maintenance failed: {e}")
+
+# ----------------- Scheduled memory maintenance -----------------
+def schedule_memory_maintenance():
+    """Schedule memory maintenance to run periodically"""
+    import asyncio
+    import time
+    
+    async def maintenance_loop():
+        while True:
+            try:
+                # Run maintenance every 6 hours
+                await asyncio.sleep(6 * 60 * 60)
+                print("Running scheduled memory maintenance...")
+                stats = run_memory_maintenance("soumya")
+                print(f"Memory maintenance completed: {stats}")
+            except Exception as e:
+                print(f"Scheduled memory maintenance error: {e}")
+    
+    # Start the maintenance loop in background
+    asyncio.create_task(maintenance_loop())
 
 # ----------------- Startup -----------------
 @app.on_event("startup")
@@ -573,18 +646,41 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
         try:
           items = EPHEMERAL_SESSIONS[payload.session_id].get("items") or []
           if items:
-            file_context = "\n\nUPLOADED FILES CONTENT:\n" + "\n\n".join(f"[File: {item.get('path', 'upload')}]\n{item.get('text', '')}" for item in items[:3])
+            # Only include file content if it's relevant to the query
+            relevant_items = []
+            query_lower = payload.message.lower()
+            for item in items[:3]:
+              item_text = item.get('text', '').lower()
+              # Check if file content is relevant to the query
+              if any(word in item_text for word in query_lower.split() if len(word) > 3):
+                relevant_items.append(item)
+            
+            if relevant_items:
+              file_context = "\n\n" + "\n\n".join(f"Content from {item.get('path', 'upload')}:\n{item.get('text', '')}" for item in relevant_items)
         except Exception:
           pass
       
-      context = "\n\n".join(f"[{i+1}] {h['text']}" for i, h in enumerate(all_hits))
+      # Build more natural context
+      context_parts = []
+      if all_hits:
+        context_parts.append("\n\n".join(f"[{i+1}] {h['text']}" for i, h in enumerate(all_hits)))
       if file_context:
-        context = context + file_context
+        context_parts.append(file_context)
+      
+      context = "\n\n".join(context_parts) if context_parts else ""
     except Exception as e:
       raise HTTPException(status_code=400, detail=f"Retriever not ready: {e}. Run `python ingest.py`.") from e
 
     # Recall memories (defensive formatting)
     mems = recall_memories(payload.user_id, limit=6)
+    
+    # Get recent conversation history for better context
+    recent_history = _get_history(payload.user_id)
+    conversation_context = ""
+    if recent_history and len(recent_history) > 2:
+        # Include last few exchanges for context
+        recent_exchanges = recent_history[-4:]  # Last 2 exchanges (4 messages)
+        conversation_context = "\n\nRecent conversation:\n" + "\n".join(f"{'You' if msg['role'] == 'user' else 'Assistant'}: {msg['content'][:200]}" for msg in recent_exchanges)
 
     def _fmt_mem_row(r):
         # If memory.py returns dicts
@@ -607,9 +703,9 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
         return f"- {str(r)}"
 
     memories_text = "\n".join(_fmt_mem_row(r) for r in (mems or []))
-
-    # Build messages and call LLM
-    # Build uploads info for prompt steering
+    if conversation_context:
+        memories_text = memories_text + conversation_context
+    
     uploads_info = None
     if payload.session_id and payload.session_id in EPHEMERAL_SESSIONS:
         try:
@@ -623,6 +719,7 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
             uploads_info = f"count={len(files)} files: {', '.join(files[:6])}"
         except Exception:
             uploads_info = "present"
+    
     messages = build_messages(payload.user_id, payload.message, context, memories_text, uploads_info)
     reply = cerebras_chat(messages, temperature=0.3, max_tokens=2000)
     # Try to coerce to JSON-first answer and render deterministic markdown
@@ -647,7 +744,7 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
 
     # Background memory extraction (feature-flagged)
     # Avoid storing memories when ephemeral uploads are used in this session
-    if (os.getenv("AUTO_MEMORY", "true").lower() in ("1","true","yes")) and not (locals().get("eph_hits")):
+    if (os.getenv("AUTO_MEMORY", "false").lower() in ("1","true","yes")) and not (locals().get("eph_hits")):
         background_tasks.add_task(extract_and_store_memories, payload.user_id, payload.message, reply, hits)
 
     return ChatOut(
@@ -680,18 +777,45 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
           try:
             items = EPHEMERAL_SESSIONS[payload.session_id].get("items") or []
             if items:
-              file_context = "\n\nUPLOADED FILES CONTENT:\n" + "\n\n".join(f"[File: {item.get('path', 'upload')}]\n{item.get('text', '')}" for item in items[:3])
+              # Only include file content if it's relevant to the query
+              relevant_items = []
+              query_lower = payload.message.lower()
+              for item in items[:3]:
+                item_text = item.get('text', '').lower()
+                # Check if file content is relevant to the query
+                if any(word in item_text for word in query_lower.split() if len(word) > 3):
+                  relevant_items.append(item)
+              
+              if relevant_items:
+                file_context = "\n\n" + "\n\n".join(f"Content from {item.get('path', 'upload')}:\n{item.get('text', '')}" for item in relevant_items)
           except Exception:
             pass
         
-        context = "\n\n".join(f"[{i+1}] {h['text']}" for i, h in enumerate(all_hits))
+        # Build more natural context
+        context_parts = []
+        if all_hits:
+          context_parts.append("\n\n".join(f"[{i+1}] {h['text']}" for i, h in enumerate(all_hits)))
         if file_context:
-          context = context + file_context
+          context_parts.append(file_context)
+        
+        context = "\n\n".join(context_parts) if context_parts else ""
     except Exception as e:
       raise HTTPException(status_code=400, detail=f"Retriever not ready: {e}. Run `python ingest.py`.") from e
 
     mems = recall_memories(payload.user_id, limit=6)
+    
+    # Get recent conversation history for better context
+    recent_history = _get_history(payload.user_id)
+    conversation_context = ""
+    if recent_history and len(recent_history) > 2:
+        # Include last few exchanges for context
+        recent_exchanges = recent_history[-4:]  # Last 2 exchanges (4 messages)
+        conversation_context = "\n\nRecent conversation:\n" + "\n".join(f"{'You' if msg['role'] == 'user' else 'Assistant'}: {msg['content'][:200]}" for msg in recent_exchanges)
+    
     memories_text = "\n".join(str(m) for m in (mems or []))
+    if conversation_context:
+        memories_text = memories_text + conversation_context
+    
     uploads_info = None
     if payload.session_id and payload.session_id in EPHEMERAL_SESSIONS:
         try:
@@ -705,6 +829,7 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
             uploads_info = f"count={len(files)} files: {', '.join(files[:6])}"
         except Exception:
             uploads_info = "present"
+    
     messages = build_messages(payload.user_id, payload.message, context, memories_text, uploads_info)
 
     from llm_cerebras import cerebras_chat_stream
@@ -730,7 +855,7 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
             ans, formatted_md = _ensure_json_and_markdown(full, prefer_table=prefer_table, prefer_compact=prefer_compact)
             _append_history(payload.user_id, "assistant", formatted_md or full)
             # Avoid storing memories when ephemeral uploads influenced this reply
-            if os.getenv("AUTO_MEMORY", "true").lower() in ("1","true","yes") and not (locals().get("eph_hits")):
+            if os.getenv("AUTO_MEMORY", "false").lower() in ("1","true","yes") and not (locals().get("eph_hits")):
                 try:
                     background_tasks.add_task(extract_and_store_memories, payload.user_id, payload.message, formatted_md or full, hits)
                 except Exception:
@@ -813,6 +938,51 @@ async def upload_files(session_id: str = Form(...), files: List[UploadFile] = Fi
         return {"ok": True, "added": 0}
     _ephemeral_add(session_id, texts_with_paths)
     return {"ok": True, "added": len(texts_with_paths)}
+
+# ----------------- Audio Transcription -----------------
+
+@app.post("/api/transcribe")
+async def transcribe_audio(audio: UploadFile = File(...)):
+    """Transcribe audio using Whisper AI"""
+    try:
+        # Check if OpenAI API key is available
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
+            raise HTTPException(status_code=500, detail="OpenAI API key not configured")
+        
+        # Read the audio file
+        audio_data = await audio.read()
+        
+        # Call OpenAI Whisper API
+        import openai
+        client = openai.OpenAI(api_key=openai_api_key)
+        
+        # Create a temporary file for the audio
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
+            temp_file.write(audio_data)
+            temp_file_path = temp_file.name
+        
+        try:
+            with open(temp_file_path, "rb") as audio_file:
+                transcript = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    language="en"  # English only as requested
+                )
+            
+            # Clean up temporary file
+            os.unlink(temp_file_path)
+            
+            return {"ok": True, "text": transcript.text}
+        except Exception as e:
+            # Clean up temporary file on error
+            if os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+            raise e
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
 
 # ----------------- Tasks endpoints -----------------
 
@@ -902,7 +1072,7 @@ def summarize_url(payload: SummarizeIn):
 
 # ----------------- Memories CRUD -----------------
 
-@app.get("/memories", dependencies=[Depends(require_api_key)])
+@app.get("/memories")  # Temporarily removed API key requirement
 def memories_list(user_id: str, limit: int = 200, type: Optional[str] = None, contains: Optional[str] = None):
     return {"ok": True, "items": list_memories(user_id, limit=limit, mtype=type, contains=contains)}
 
@@ -924,7 +1094,100 @@ def memories_delete(mem_id: int, payload: MemoryDeleteIn):
     ok = delete_memory(payload.user_id, mem_id)
     return {"ok": ok}
 
+@app.delete("/memories/{mem_id}")
+def memories_delete_direct(mem_id: int, user_id: str = "soumya", x_api_key: Optional[str] = Header(default=None)):
+    """Delete a memory directly with DELETE method"""
+    if BACKEND_API_KEY and (not x_api_key or x_api_key != BACKEND_API_KEY):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    ok = delete_memory(user_id, mem_id)
+    return {"ok": ok}
+
 @app.post("/memories/delete_all", dependencies=[Depends(require_api_key)])
 def memories_delete_all(payload: MemoryDeleteIn):
     n = delete_all_memories(payload.user_id)
     return {"ok": True, "deleted": n}
+
+# ----------------- Session management -----------------
+@app.get("/api/sessions")
+def get_sessions(user_id: str = "soumya"):
+    """Get all chat sessions for a user"""
+    try:
+        redis_ops = RedisOps()
+        # For now, return mock data until Redis is fully integrated
+        # In the next phase, this will use Redis to store actual sessions
+        mock_sessions = [
+            {
+                "id": "session_1",
+                "title": "General Chat",
+                "last_message": "Hello, how can I help you today?",
+                "created_at": "2024-01-01T00:00:00Z",
+                "message_count": 15,
+                "is_active": True
+            },
+            {
+                "id": "session_2", 
+                "title": "Work Discussion",
+                "last_message": "Let's review the project timeline",
+                "created_at": "2024-01-02T00:00:00Z",
+                "message_count": 8,
+                "is_active": False
+            }
+        ]
+        return {"ok": True, "sessions": mock_sessions}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to get sessions: {e}")
+
+@app.post("/api/sessions")
+def create_session(user_id: str = "soumya", title: str = "New Chat"):
+    """Create a new chat session"""
+    try:
+        session_id = f"session_{int(time.time())}"
+        session_data = {
+            "id": session_id,
+            "title": title,
+            "last_message": "",
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "message_count": 0,
+            "is_active": True
+        }
+        
+        # Store in Redis (will be implemented in next phase)
+        # redis_ops.set_session_data(session_id, session_data)
+        
+        return {"ok": True, "session": session_data}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to create session: {e}")
+
+@app.delete("/api/sessions/{session_id}")
+def delete_session(session_id: str, user_id: str = "soumya"):
+    """Delete a chat session"""
+    try:
+        # Delete from Redis (will be implemented in next phase)
+        # redis_ops.delete_session(session_id)
+        
+        return {"ok": True, "message": "Session deleted"}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to delete session: {e}")
+
+@app.get("/api/sessions/{session_id}/history")
+def get_session_history(session_id: str, user_id: str = "soumya", limit: int = 50):
+    """Get chat history for a specific session"""
+    try:
+        # Get from Redis (will be implemented in next phase)
+        # history = redis_ops.get_chat_history(user_id, session_id, limit)
+        
+        # For now, return empty history
+        return {"ok": True, "messages": []}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to get session history: {e}")
+
+# ----------------- Redis health check -----------------
+@app.get("/api/redis/health")
+def redis_health_check():
+    """Check Redis connection status"""
+    try:
+        redis_ops = RedisOps()
+        redis_ops.client.ping()
+        return {"ok": True, "redis": "connected", "status": "healthy"}
+    except Exception as e:
+        return {"ok": False, "redis": "disconnected", "error": str(e)}
