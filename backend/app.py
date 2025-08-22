@@ -280,7 +280,7 @@ def _ensure_json_and_markdown(raw: str, prefer_table: bool = False, prefer_compa
                 {"role": "system", "content": "You are a JSON repair tool. Return ONLY valid JSON matching this exact schema: { title: string, sections: [{ heading: string, bullets?: string[], table?: { headers: string[], rows: string[][] } }] }. No explanations."},
                 {"role": "user", "content": raw[:6000]},
             ]
-            fixed = cerebras_chat(repair_prompt, temperature=0.0, max_tokens=800)
+            fixed = cerebras_chat(repair_prompt, temperature=0.0, max_tokens=1000)
             obj = json.loads(fixed)
             ans = JsonAnswer(**obj)
             return ans, _render_markdown(ans, prefer_table=prefer_table, prefer_compact=prefer_compact)
