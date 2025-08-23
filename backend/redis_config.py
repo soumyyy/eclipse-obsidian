@@ -128,7 +128,8 @@ class RedisOps:
         """Get chat history from Redis"""
         key = RedisKeys.chat_history_key(user_id, session_id)
         messages = self.client.lrange(key, 0, limit - 1)
-        return [eval(msg) for msg in messages]
+        # Reverse to get correct chronological order (user message first, then assistant)
+        return [eval(msg) for msg in reversed(messages)]
     
     # Ephemeral files
     def store_ephemeral_files(self, session_id: str, files_data: dict, expire: int = 3600):

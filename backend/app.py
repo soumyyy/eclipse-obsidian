@@ -849,11 +849,52 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
         finally:
             full = "".join(buffer)
             _append_history(payload.user_id, "user", payload.message)
-            # Format to JSON-first → markdown and store formatted in history
-            prefer_table = bool(re.search(r"\b(table|tabulate|comparison|vs)\b", payload.message, flags=re.I))
-            prefer_compact = bool(re.fullmatch(r"\s*(hi|hello|hey|yo|hola)[.!?]?\s*", (payload.message or ""), flags=re.I))
-            ans, formatted_md = _ensure_json_and_markdown(full, prefer_table=prefer_table, prefer_compact=prefer_compact)
-            _append_history(payload.user_id, "assistant", formatted_md or full)
+            
+            # Store messages in Redis if session_id is provided
+            if payload.session_id:
+                try:
+                    redis_ops = RedisOps()
+                    
+                    # Store user message
+                    user_message = {
+                        "role": "user",
+                        "content": payload.message,
+                        "timestamp": datetime.utcnow().isoformat() + "Z"
+                    }
+                    redis_ops.store_chat_message(payload.user_id, payload.session_id, user_message)
+                    
+                    # Format to JSON-first → markdown and store formatted in history
+                    prefer_table = bool(re.search(r"\b(table|tabulate|comparison|vs)\b", payload.message, flags=re.I))
+                    prefer_compact = bool(re.fullmatch(r"\s*(hi|hello|hey|yo|hola)[.!?]?\s*", (payload.message or ""), flags=re.I))
+                    ans, formatted_md = _ensure_json_and_markdown(full, prefer_table=prefer_table, prefer_compact=prefer_compact)
+                    _append_history(payload.user_id, "assistant", formatted_md or full)
+                    
+                    # Store assistant message
+                    assistant_message = {
+                        "role": "assistant",
+                        "content": formatted_md or full,
+                        "timestamp": datetime.utcnow().isoformat() + "Z"
+                    }
+                    redis_ops.store_chat_message(payload.user_id, payload.session_id, assistant_message)
+                    
+                    # Update session with last message info
+                    try:
+                        session_data = redis_ops.get_session_data(payload.session_id)
+                        if session_data:
+                            session_data["last_message"] = payload.message[:100] + "..." if len(payload.message) > 100 else payload.message
+                            session_data["message_count"] = session_data.get("message_count", 0) + 2
+                            redis_ops.set_session_data(payload.session_id, session_data, expire=86400)
+                    except Exception as e:
+                        print(f"Error updating session data: {e}")
+                        
+                except Exception as e:
+                    print(f"Error storing messages in Redis: {e}")
+            else:
+                # Format to JSON-first → markdown and store formatted in history
+                prefer_table = bool(re.search(r"\b(table|tabulate|comparison|vs)\b", payload.message, flags=re.I))
+                prefer_compact = bool(re.fullmatch(r"\s*(hi|hello|hey|yo|hola)[.!?]?\s*", (payload.message or ""), flags=re.I))
+                ans, formatted_md = _ensure_json_and_markdown(full, prefer_table=prefer_table, prefer_compact=prefer_compact)
+                _append_history(payload.user_id, "assistant", formatted_md or full)
             # Avoid storing memories when ephemeral uploads influenced this reply
             if os.getenv("AUTO_MEMORY", "false").lower() in ("1","true","yes") and not (locals().get("eph_hits")):
                 try:
@@ -1113,27 +1154,25 @@ def get_sessions(user_id: str = "soumya"):
     """Get all chat sessions for a user"""
     try:
         redis_ops = RedisOps()
-        # For now, return mock data until Redis is fully integrated
-        # In the next phase, this will use Redis to store actual sessions
-        mock_sessions = [
-            {
-                "id": "session_1",
-                "title": "General Chat",
-                "last_message": "Hello, how can I help you today?",
-                "created_at": "2024-01-01T00:00:00Z",
-                "message_count": 15,
-                "is_active": True
-            },
-            {
-                "id": "session_2", 
-                "title": "Work Discussion",
-                "last_message": "Let's review the project timeline",
-                "created_at": "2024-01-02T00:00:00Z",
-                "message_count": 8,
-                "is_active": False
-            }
-        ]
-        return {"ok": True, "sessions": mock_sessions}
+        
+        # Get user's session keys
+        user_sessions_key = f"{RedisKeys.USER_SESSIONS}{user_id}"
+        session_ids = redis_ops.client.smembers(user_sessions_key)
+        
+        sessions = []
+        for session_id in session_ids:
+            try:
+                session_data = redis_ops.get_session_data(session_id)
+                if session_data:
+                    sessions.append(session_data)
+            except Exception as e:
+                print(f"Error loading session {session_id}: {e}")
+                continue
+        
+        # Sort by creation date (newest first)
+        sessions.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        
+        return {"ok": True, "sessions": sessions}
     except Exception as e:
         raise HTTPException(500, f"Failed to get sessions: {e}")
 
@@ -1141,6 +1180,7 @@ def get_sessions(user_id: str = "soumya"):
 def create_session(user_id: str = "soumya", title: str = "New Chat"):
     """Create a new chat session"""
     try:
+        redis_ops = RedisOps()
         session_id = f"session_{int(time.time())}"
         session_data = {
             "id": session_id,
@@ -1151,8 +1191,13 @@ def create_session(user_id: str = "soumya", title: str = "New Chat"):
             "is_active": True
         }
         
-        # Store in Redis (will be implemented in next phase)
-        # redis_ops.set_session_data(session_id, session_data)
+        # Store session data in Redis
+        redis_ops.set_session_data(session_id, session_data, expire=86400)  # 24 hours
+        
+        # Add session to user's session list
+        user_sessions_key = f"{RedisKeys.USER_SESSIONS}{user_id}"
+        redis_ops.client.sadd(user_sessions_key, session_id)
+        redis_ops.client.expire(user_sessions_key, 86400 * 30)  # 30 days
         
         return {"ok": True, "session": session_data}
     except Exception as e:
@@ -1162,8 +1207,18 @@ def create_session(user_id: str = "soumya", title: str = "New Chat"):
 def delete_session(session_id: str, user_id: str = "soumya"):
     """Delete a chat session"""
     try:
-        # Delete from Redis (will be implemented in next phase)
-        # redis_ops.delete_session(session_id)
+        redis_ops = RedisOps()
+        
+        # Remove session from user's session list
+        user_sessions_key = f"{RedisKeys.USER_SESSIONS}{user_id}"
+        redis_ops.client.srem(user_sessions_key, session_id)
+        
+        # Delete session data
+        redis_ops.delete_session(session_id)
+        
+        # Delete chat history
+        chat_history_key = RedisKeys.chat_history_key(user_id, session_id)
+        redis_ops.client.delete(chat_history_key)
         
         return {"ok": True, "message": "Session deleted"}
     except Exception as e:
@@ -1173,11 +1228,9 @@ def delete_session(session_id: str, user_id: str = "soumya"):
 def get_session_history(session_id: str, user_id: str = "soumya", limit: int = 50):
     """Get chat history for a specific session"""
     try:
-        # Get from Redis (will be implemented in next phase)
-        # history = redis_ops.get_chat_history(user_id, session_id, limit)
-        
-        # For now, return empty history
-        return {"ok": True, "messages": []}
+        redis_ops = RedisOps()
+        history = redis_ops.get_chat_history(user_id, session_id, limit)
+        return {"ok": True, "messages": history}
     except Exception as e:
         raise HTTPException(500, f"Failed to get session history: {e}")
 

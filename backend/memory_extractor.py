@@ -109,6 +109,34 @@ _TASK_TRIGGER_PATTERNS = [
     r"\bfollow up\b",
     r"\bschedule\b",
     r"\bdue (?:on|by)\b",
+    r"\b(?:note that|note down|jot down)\b",
+    r"\b(?:record|save|remember)\b",
+    r"\b(?:don't forget|don't forget to)\b",
+    r"\b(?:mark my calendar|calendar)\b",
+    r"\b(?:track|monitor)\b",
+    r"\b(?:deadline|timeline|milestone)\b",
+    r"\b(?:priority|urgent|important)\b",
+    r"\b(?:check|verify|confirm)\b",
+    r"\b(?:update|modify|change)\b",
+    r"\b(?:research|investigate|look into)\b",
+    r"\b(?:prepare|organize|arrange)\b",
+    r"\b(?:contact|reach out|get in touch)\b",
+    r"\b(?:review|analyze|examine)\b"
+]
+
+_MEMORY_TRIGGER_PATTERNS = [
+    r"\b(?:my|i am|i'm|i have|i like|i prefer|i want|i need)\b",
+    r"\b(?:favorite|preferred|best|worst|always|never)\b",
+    r"\b(?:experience|worked|studied|learned|discovered)\b",
+    r"\b(?:project|company|role|position|job)\b",
+    r"\b(?:skill|technology|tool|framework|language)\b",
+    r"\b(?:hobby|interest|passion|goal|dream)\b",
+    r"\b(?:family|friend|colleague|mentor|teacher)\b",
+    r"\b(?:place|location|city|country|travel)\b",
+    r"\b(?:book|article|video|podcast|course)\b",
+    r"\b(?:achievement|accomplishment|milestone|success)\b",
+    r"\b(?:challenge|problem|difficulty|obstacle)\b",
+    r"\b(?:lesson|insight|realization|understanding)\b"
 ]
 
 def _detect_task_trigger(user_msg: str) -> bool:
@@ -116,6 +144,30 @@ def _detect_task_trigger(user_msg: str) -> bool:
     for pat in _TASK_TRIGGER_PATTERNS:
         if re.search(pat, text):
             return True
+    return False
+
+def _detect_memory_trigger(user_msg: str) -> bool:
+    """Detect if user message contains personal information worth remembering."""
+    text = (user_msg or "").lower()
+    for pat in _MEMORY_TRIGGER_PATTERNS:
+        if re.search(pat, text):
+            return True
+    return False
+
+def _should_extract_memory(user_msg: str, assistant_reply: str) -> bool:
+    """
+    Determine if we should extract memories from this conversation turn.
+    Only extract when user explicitly requests or provides personal information.
+    """
+    # Always extract if user explicitly requests
+    if _detect_task_trigger(user_msg):
+        return True
+    
+    # Extract if user provides personal information
+    if _detect_memory_trigger(user_msg):
+        return True
+    
+    # Don't extract from random LLM responses
     return False
 
 
@@ -267,6 +319,10 @@ def store_extracted_memories(user_id: str, items: List[Dict[str, Any]], task_tri
 
 
 def extract_and_store_memories(user_id: str, user_msg: str, assistant_reply: str, hits: Optional[List[Dict[str, Any]]] = None):
+    # Only extract memories if user explicitly requests or provides personal info
+    if not _should_extract_memory(user_msg, assistant_reply):
+        return 0
+    
     # Build snippets from hits
     snippets: List[str] = []
     if hits:
@@ -274,16 +330,21 @@ def extract_and_store_memories(user_id: str, user_msg: str, assistant_reply: str
             txt = h.get("text") or ""
             if txt:
                 snippets.append(txt[:400])
+    
     items = extract_memories(user_id, user_msg, assistant_reply, recent_turns=None, top_snippets=snippets)
+    
     # Determine if the user explicitly asked to capture a task/note
     task_triggered = _detect_task_trigger(user_msg)
+    memory_triggered = _detect_memory_trigger(user_msg)
+    
     # Optional debug log
     if os.getenv("AUTO_MEMORY_DEBUG", "false").strip().lower() in ("1", "true", "yes"):
         try:
-            print(f"[memory_extractor] extracted {len(items)} items for user={user_id}")
+            print(f"[memory_extractor] extracted {len(items)} items for user={user_id}, task_triggered={task_triggered}, memory_triggered={memory_triggered}")
         except Exception:
             pass
-    store_extracted_memories(user_id, items, task_triggered=task_triggered)
+    
+    return store_extracted_memories(user_id, items, task_triggered=task_triggered)
 
 
 # ---- memory consolidation and enhancement ----
@@ -492,8 +553,8 @@ def run_memory_maintenance(user_id: str) -> Dict[str, int]:
         if stats["total_memories"] < 5:
             return stats  # Not enough memories to consolidate
         
-        # Run consolidation
-        stats["consolidations"] = consolidate_memories(user_id)
+        # Run advanced consolidation
+        stats["consolidations"] = consolidate_memories_advanced(user_id)
         
         # Enhance a few random memories (but not too many)
         if stats["total_memories"] > 10:
@@ -510,5 +571,164 @@ def run_memory_maintenance(user_id: str) -> Dict[str, int]:
     except Exception as e:
         print(f"Memory maintenance error: {e}")
         return stats
+
+# ---- Enhanced memory consolidation functions ----
+
+def calculate_memory_similarity(mem1: Dict, mem2: Dict) -> float:
+    """
+    Calculate semantic similarity between two memories using multiple methods.
+    Returns a score between 0 and 1.
+    """
+    try:
+        content1 = mem1.get("content", "").lower()
+        content2 = mem2.get("content", "").lower()
+        
+        if not content1 or not content2:
+            return 0.0
+        
+        # Method 1: Jaccard similarity on words
+        words1 = set(content1.split())
+        words2 = set(content2.split())
+        if len(words1) > 0 and len(words2) > 0:
+            jaccard = len(words1.intersection(words2)) / len(words1.union(words2))
+        else:
+            jaccard = 0.0
+        
+        # Method 2: Content length similarity
+        len1, len2 = len(content1), len(content2)
+        length_sim = 1 - abs(len1 - len2) / max(len1, len2) if max(len1, len2) > 0 else 0
+        
+        # Method 3: Keyword overlap
+        keywords1 = set([w for w in words1 if len(w) > 3 and w not in ['the', 'and', 'or', 'but', 'for', 'with']])
+        keywords2 = set([w for w in words2 if len(w) > 3 and w not in ['the', 'and', 'or', 'but', 'for', 'with']])
+        if len(keywords1) > 0 and len(keywords2) > 0:
+            keyword_sim = len(keywords1.intersection(keywords2)) / len(keywords1.union(keywords2))
+        else:
+            keyword_sim = 0.0
+        
+        # Weighted combination
+        final_score = (jaccard * 0.5) + (length_sim * 0.2) + (keyword_sim * 0.3)
+        return min(1.0, final_score)
+        
+    except Exception as e:
+        print(f"Error calculating similarity: {e}")
+        return 0.0
+
+def consolidate_memories_advanced(user_id: str) -> int:
+    """
+    Advanced consolidation using semantic similarity and LLM-based intelligent merging.
+    """
+    try:
+        memories = list_memories(user_id, limit=1000)
+        if len(memories) < 3:
+            return 0
+            
+        consolidated_count = 0
+        
+        # Group memories by type for better organization
+        memories_by_type = {}
+        for mem in memories:
+            mtype = mem.get("type", "note")
+            if mtype not in memories_by_type:
+                memories_by_type[mtype] = []
+            memories_by_type[mtype].append(mem)
+        
+        for mtype, type_memories in memories_by_type.items():
+            if len(type_memories) < 2:
+                continue
+                
+            # Use semantic similarity for better grouping
+            processed = set()
+            for i, mem1 in enumerate(type_memories):
+                if mem1.get("id") in processed:
+                    continue
+                    
+                similar_group = [mem1]
+                processed.add(mem1.get("id"))
+                
+                # Find semantically similar memories
+                for j, mem2 in enumerate(type_memories[i+1:], i+1):
+                    if mem2.get("id") in processed:
+                        continue
+                        
+                    # Enhanced similarity check using multiple methods
+                    similarity_score = calculate_memory_similarity(mem1, mem2)
+                    
+                    if similarity_score > 0.4:  # 40% similarity threshold
+                        similar_group.append(mem2)
+                        processed.add(mem2.get("id"))
+                
+                # Consolidate if we found similar memories
+                if len(similar_group) > 1:
+                    if consolidate_memory_group_advanced(user_id, similar_group):
+                        consolidated_count += 1
+                        
+        return consolidated_count
+        
+    except Exception as e:
+        print(f"Error in advanced consolidation: {e}")
+        return 0
+
+def consolidate_memory_group_advanced(user_id: str, memory_group: List[Dict]) -> bool:
+    """
+    Advanced consolidation using LLM to intelligently merge similar memories.
+    """
+    try:
+        if len(memory_group) < 2:
+            return False
+            
+        # Prepare content for LLM consolidation
+        memory_contents = [mem.get("content", "") for mem in memory_group if mem.get("content")]
+        memory_types = [mem.get("type", "note") for mem in memory_group]
+        
+        # Determine the most common type
+        from collections import Counter
+        most_common_type = Counter(memory_types).most_common(1)[0][0]
+        
+        # Create consolidation prompt
+        consolidation_prompt = [
+            {"role": "system", "content": f"""You are a memory consolidation expert. Your task is to merge multiple related memories into one comprehensive, well-organized memory.
+
+Guidelines:
+- Combine related information without losing details
+- Organize the content logically
+- Remove redundancy while preserving unique information
+- Maintain clarity and readability
+- Keep the memory type as: {most_common_type}
+- Ensure the result is actionable and insightful
+- Add relevant tags or categories if helpful
+
+Return ONLY valid JSON matching this schema:
+{{"consolidated_content": "the merged memory content", "confidence": 0.95, "priority": 1, "tags": ["tag1", "tag2"]}}"""},
+            {"role": "user", "content": f"Consolidate these related {most_common_type} memories into one comprehensive memory:\n\n" + "\n\n".join(f"Memory {i+1}: {content}" for i, content in enumerate(memory_contents))}
+        ]
+        
+        # Get consolidated content from LLM
+        consolidated_response = cerebras_chat_with_model(consolidation_prompt, temperature=0.1, max_tokens=1000)
+        
+        try:
+            data = json.loads(consolidated_response)
+            consolidated_content = data.get("consolidated_content", "")
+            if not consolidated_content:
+                return False
+                
+            # Create the consolidated memory
+            new_memory_id = add_memory(user_id, consolidated_content, mtype=most_common_type)
+            
+            if new_memory_id:
+                # Delete the original memories
+                for mem in memory_group:
+                    delete_memory(user_id, mem.get("id"))
+                
+                print(f"Successfully consolidated {len(memory_group)} memories into new memory {new_memory_id}")
+                return True
+                
+        except Exception as e:
+            print(f"Error parsing consolidation response: {e}")
+            return False
+            
+    except Exception as e:
+        print(f"Error in advanced consolidation: {e}")
+        return False
 
 

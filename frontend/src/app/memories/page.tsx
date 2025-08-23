@@ -103,6 +103,40 @@ export default function MemoriesPage() {
     }
   };
 
+  const saveMemory = async (memoryId: number, newContent: string) => {
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/memories/${memoryId}`, {
+        method: "POST",
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+        },
+        body: JSON.stringify({
+          user_id: "soumya",
+          content: newContent
+        })
+      });
+      
+      if (response.ok) {
+        // Update the memory in local state
+        setMemories(memories.map(memory => 
+          memory.id === memoryId 
+            ? { ...memory, content: newContent }
+            : memory
+        ));
+        setEditingId(null);
+        setEditContent("");
+      } else {
+        const data = await response.json();
+        throw new Error(data?.error || "Failed to update memory");
+      }
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      console.error("Error updating memory:", errorMessage);
+      alert(`Failed to update memory: ${errorMessage}`);
+    }
+  };
+
   const filteredMemories = memories.filter(memory =>
     (memory.content || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
     (memory.type || '').toLowerCase().includes(searchTerm.toLowerCase())
@@ -200,8 +234,7 @@ export default function MemoriesPage() {
                         <div className="flex items-center gap-2">
                           <Button
                             onClick={() => {
-                              setEditingId(null);
-                              setEditContent("");
+                              saveMemory(memory.id, editContent);
                             }}
                             size="sm"
                             className="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded transition-colors"

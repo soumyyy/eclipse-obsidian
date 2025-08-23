@@ -2,10 +2,11 @@
 import { useState, useRef, useEffect } from "react";
 import Message from "@/components/Message";
 import Sound from "@/components/Sound";
-import Sidebar from "@/components/Sidebar";
+
 import HUD from "@/components/HUD";
 import TasksPanel from "@/components/TasksPanel";
-import { Plus, Mic, SendHorizonal } from "lucide-react";
+import ChatSidebar from "@/components/ChatSidebar";
+import { Plus, Mic, SendHorizonal, Menu, MessageSquare } from "lucide-react";
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -65,11 +66,68 @@ export default function Home() {
   const [transcribing, setTranscribing] = useState(false);
   const [transcribingDots, setTranscribingDots] = useState("");
   const transcribeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [activeSession, setActiveSession] = useState<string>("");
+
+  const [activeSession, setActiveSession] = useState<string>(sessionId);
   const [showTasks, setShowTasks] = useState(false);
+  const [chatSidebarOpen, setChatSidebarOpen] = useState(false);
+  const [creatingSession, setCreatingSession] = useState(false);
 
   const [healthy, setHealthy] = useState<boolean | null>(null);
+
+  const createNewChatSession = async () => {
+    try {
+      setCreatingSession(true);
+      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/api/sessions`, {
+        method: "POST",
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+        },
+        body: JSON.stringify({
+          user_id: "soumya",
+          title: "New Chat"
+        })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setActiveSession(data.session.id);
+        setMessages([]);
+        inputRef.current?.focus();
+      }
+    } catch (error) {
+      console.error("Error creating new session:", error);
+    } finally {
+      setCreatingSession(false);
+    }
+  };
+
+  const handleSessionSelect = async (sessionId: string) => {
+    setActiveSession(sessionId);
+    setMessages([]);
+    
+    // Load session history from Redis
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/api/sessions/${sessionId}/history?user_id=soumya`, {
+        headers: {
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+        }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        const historyMessages: ChatMessage[] = (data.messages || []).map((msg: any) => ({
+          role: msg.role,
+          content: msg.content,
+          sources: msg.sources || [],
+          formatted: true
+        }));
+        setMessages(historyMessages);
+      }
+    } catch (error) {
+      console.error("Error loading session history:", error);
+    }
+  };
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
@@ -101,7 +159,7 @@ export default function Home() {
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        clearChat();
+        createNewChatSession();
       }
       if (mod && e.key.toLowerCase() === 'j') {
         e.preventDefault();
@@ -124,6 +182,36 @@ export default function Home() {
   async function sendMessage(e?: React.FormEvent) {
     if (e) e.preventDefault();
     if (!input.trim() || loading) return;
+    
+    // Create a new session if none exists
+    let currentSessionId = activeSession;
+    if (!currentSessionId) {
+      try {
+        setCreatingSession(true);
+        const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/api/sessions`, {
+          method: "POST",
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+          },
+          body: JSON.stringify({
+            user_id: "soumya",
+            title: input.substring(0, 50) + (input.length > 50 ? "..." : "")
+          })
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          currentSessionId = data.session.id;
+          setActiveSession(currentSessionId);
+        }
+      } catch (error) {
+        console.error("Error creating session:", error);
+      } finally {
+        setCreatingSession(false);
+      }
+    }
+    
     const userMsg: ChatMessage = { role: "user", content: input };
     setMessages((m) => [...m, userMsg]);
     setInput("");
@@ -132,7 +220,7 @@ export default function Home() {
       // If there are pending files, upload first and show chips as a message
       if (pendingFiles.length > 0) {
         const form = new FormData();
-        form.append('session_id', sessionId);
+        form.append('session_id', activeSession || sessionId);
         for (const f of pendingFiles) form.append('files', f);
         try {
           const r = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/upload`, { 
@@ -172,7 +260,7 @@ export default function Home() {
           "Content-Type": "application/json",
           'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
         },
-        body: JSON.stringify({ user_id: "soumya", message: userMsg.content, save_fact, make_note, save_task, session_id: sessionId }),
+        body: JSON.stringify({ user_id: "soumya", message: userMsg.content, save_fact, make_note, save_task, session_id: currentSessionId }),
       });
       if (!resp.ok || !resp.body) {
         const data = await resp.json().catch(() => ({}));
@@ -376,28 +464,19 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-black via-gray-900 to-black text-white">
-      {/* Sidebar */}
-      <Sidebar
-        isOpen={sidebarOpen}
-        onToggle={() => setSidebarOpen(!sidebarOpen)}
-        activeSession={activeSession}
-        onSessionChange={setActiveSession}
-      />
-      
       {/* Main Content */}
-      <div className={`transition-all duration-300 ${sidebarOpen ? 'ml-80' : 'ml-0'}`}>
+      <div className="transition-all duration-300">
         {/* Header */}
         <header className="sticky top-0 z-10 bg-black/80 backdrop-blur-xl border-b border-gray-600 shadow-2xl">
           <div className="max-w-7xl mx-auto px-6 py-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-6">
                 <button
-                  onClick={() => setSidebarOpen(!sidebarOpen)}
+                  onClick={() => setChatSidebarOpen(true)}
                   className="p-2 rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white transition-colors border border-gray-600"
+                  title="Open chat sessions (Cmd+K)"
                 >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-                  </svg>
+                  <Menu className="w-5 h-5" />
                 </button>
                 
                 <div className="flex items-center gap-4">
@@ -413,8 +492,9 @@ export default function Home() {
                   >
                     Memories
                   </a>
-
                 </div>
+                
+
               </div>
               
               <div className="flex items-center gap-4">
@@ -529,7 +609,7 @@ export default function Home() {
                     sendMessage();
                   }
                 }}
-                placeholder={loading ? "Waiting for reply..." : "Hey soumya"}
+                placeholder={loading ? "Waiting for reply..." : creatingSession ? "Creating new chat..." : "Hey soumya"}
                 ref={inputRef}
                 rows={1}
                 className="w-full bg-transparent text-white px-3 py-2 pr-12 outline-none placeholder:text-gray-500 resize-none overflow-y-auto"
@@ -591,6 +671,12 @@ export default function Home() {
              {/* Existing Components */}
        <HUD />
        <TasksPanel isOpen={showTasks} onClose={() => setShowTasks(false)} />
+       <ChatSidebar 
+         isOpen={chatSidebarOpen}
+         onClose={() => setChatSidebarOpen(false)}
+         onSessionSelect={handleSessionSelect}
+         currentSessionId={activeSession}
+       />
     </div>
   );
 }
