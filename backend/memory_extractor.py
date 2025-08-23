@@ -172,37 +172,77 @@ def _should_extract_memory(user_msg: str, assistant_reply: str) -> bool:
 
 
 def extract_memories(user_id: str, user_msg: str, assistant_reply: str, recent_turns: Optional[List[Dict]] = None, top_snippets: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-    messages = _build_prompt(user_msg, assistant_reply, recent_turns, top_snippets)
-    raw = cerebras_chat_with_model(messages, model=None, temperature=0.0, max_tokens=800)
-    data = _safe_json_parse(raw) or {"memories": []}
-    out: List[Dict[str, Any]] = []
-    for m in data.get("memories", []) or []:
-        mtype = _normalize_type(m.get("type", "").strip())
-        content = (m.get("content") or "").strip()
-        if not mtype or not content:
-            continue
-        confidence = float(m.get("confidence", 0.0) or 0.0)
-        priority = int(m.get("priority", 3) or 3)
-        due_text = m.get("due_text")
-        due_ts = m.get("due_ts")
-        if mtype == "task" and not due_ts and due_text:
-            due_ts = parse_due_text_to_ts(due_text)
-        ck = _canonical_key(m)
-        # Optional entity extraction (names/projects) if present in JSON (extensible)
-        entities = m.get("entities") if isinstance(m.get("entities"), list) else []
-        out.append({
-            "type": mtype,
-            "content": content,
-            "confidence": confidence,
-            "priority": priority,
-            "ttl_days": m.get("ttl_days"),
-            "due_text": due_text,
-            "due_ts": due_ts,
-            "canonical_key": ck,
-            "key_hash": _hash_key(ck) if ck else None,
-            "source": m.get("source") or "user",
-            "entities": entities,
-        })
+    """
+    Extract memories ONLY from user messages, then enhance them with better language.
+    """
+    # Only process user message, ignore assistant reply for memory extraction
+    if not user_msg.strip():
+        return []
+    
+    # Create a focused prompt that only looks at the user message
+    system_prompt = """You are a memory extraction expert. Extract personal information ONLY from the USER message.
+
+Guidelines:
+- Extract facts, preferences, tasks, and personal information
+- Use clear, concise language
+- Focus on what the user said about themselves
+- Do NOT include information from assistant responses
+- Keep memories short and actionable
+
+Return ONLY valid JSON matching this schema:
+{"memories": [{"type": "fact|preference|task", "content": "enhanced content", "confidence": 0.9, "priority": 1, "source": "user"}]}"""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Extract memories from this user message: {user_msg}"}
+    ]
+    
+    try:
+        raw = cerebras_chat_with_model(messages, model=None, temperature=0.1, max_tokens=600)
+        data = _safe_json_parse(raw) or {"memories": []}
+        
+        out: List[Dict[str, Any]] = []
+        for m in data.get("memories", []) or []:
+            mtype = _normalize_type(m.get("type", "").strip())
+            content = (m.get("content") or "").strip()
+            
+            if not mtype or not content:
+                continue
+                
+            # Only accept memories that are clearly from user content
+            if not _is_user_content(user_msg, content):
+                continue
+                
+            confidence = float(m.get("confidence", 0.0) or 0.0)
+            priority = int(m.get("priority", 3) or 3)
+            due_text = m.get("due_text")
+            due_ts = m.get("due_ts")
+            
+            if mtype == "task" and not due_ts and due_text:
+                due_ts = parse_due_text_to_ts(due_text)
+                
+            ck = _canonical_key(m)
+            entities = m.get("entities") if isinstance(m.get("entities"), list) else []
+            
+            out.append({
+                "type": mtype,
+                "content": content,
+                "confidence": confidence,
+                "priority": priority,
+                "ttl_days": m.get("ttl_days"),
+                "due_text": due_text,
+                "due_ts": due_ts,
+                "canonical_key": ck,
+                "key_hash": _hash_key(ck) if ck else None,
+                "source": "user",
+                "entities": entities,
+            })
+            
+        return out
+        
+    except Exception as e:
+        print(f"Error in memory extraction: {e}")
+        return []
     # If nothing extracted, try a focused single-turn fallback pass (no regex)
     if not out:
         try:
@@ -730,5 +770,23 @@ Return ONLY valid JSON matching this schema:
     except Exception as e:
         print(f"Error in advanced consolidation: {e}")
         return False
+
+
+def _is_user_content(user_msg: str, extracted_content: str) -> bool:
+    """
+    Verify that extracted content is actually based on user message.
+    """
+    user_words = set(user_msg.lower().split())
+    extracted_words = set(extracted_content.lower().split())
+    
+    # Check if key words from user message are present in extracted content
+    key_words = [w for w in user_words if len(w) > 3 and w not in ['the', 'and', 'or', 'but', 'for', 'with', 'this', 'that']]
+    
+    if not key_words:
+        return True  # Allow if no key words to check
+        
+    # At least 30% of key words should be present
+    matches = sum(1 for word in key_words if word in extracted_words)
+    return matches / len(key_words) >= 0.3
 
 

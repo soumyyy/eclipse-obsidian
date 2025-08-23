@@ -116,11 +116,11 @@ export default function TasksPanel({ isOpen, onClose }: TasksPanelProps) {
                 if (e.key === 'Enter') addTask();
               }}
               placeholder="Add a new task..."
-              className="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-white placeholder-gray-400 focus:border-gray-500 text-sm"
+              className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-white placeholder-gray-400 focus:border-gray-600 text-sm"
             />
             <button
               onClick={addTask}
-              className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded transition-colors text-sm"
+              className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-white rounded transition-colors text-sm border border-gray-700"
             >
               <Plus className="w-3 h-3" />
             </button>
@@ -143,11 +143,11 @@ export default function TasksPanel({ isOpen, onClose }: TasksPanelProps) {
               {tasks.map((task) => (
                 <div
                   key={task.id}
-                  className="flex items-start gap-2 p-2 bg-gray-800 border border-gray-700 rounded hover:bg-gray-750 transition-colors"
+                  className="flex items-start gap-2 p-2 bg-gray-900 border border-gray-800 rounded hover:bg-gray-800 transition-colors"
                 >
                   <button
                     onClick={() => completeTask(task.id)}
-                    className="mt-0.5 w-4 h-4 rounded border border-gray-500 bg-gray-700 hover:bg-gray-600 hover:border-gray-400 transition-colors flex items-center justify-center"
+                    className="mt-0.5 w-4 h-4 rounded border border-gray-600 bg-gray-800 hover:bg-gray-700 hover:border-gray-500 transition-colors flex items-center justify-center"
                   >
                     <Check className="w-2.5 h-2.5 text-white opacity-0 hover:opacity-100" />
                   </button>
@@ -168,16 +168,16 @@ export default function TasksPanel({ isOpen, onClose }: TasksPanelProps) {
         {/* Completed Tasks */}
         {completedTasks.length > 0 && (
           <div className="border-t border-gray-700 p-3">
-            <h3 className="text-xs text-gray-400 mb-2 uppercase tracking-wide">Completed</h3>
+            {/* <h3 className="text-xs text-gray-400 mb-2 uppercase tracking-wide">Completed</h3> */}
             <div className="space-y-1">
               {completedTasks.map((task) => (
                 <div
                   key={task.id}
-                  className="flex items-center gap-2 p-2 bg-gray-800/50 border border-gray-700 rounded text-sm text-gray-400"
+                  className="flex items-center gap-2 p-2 bg-gray-900/50 border border-gray-800 rounded text-sm text-gray-400"
                 >
                   <button
                     onClick={() => toggleCompletedTask(task.id)}
-                    className="w-4 h-4 rounded border border-gray-600 bg-gray-700 hover:bg-gray-600 transition-colors flex items-center justify-center"
+                    className="w-4 h-4 rounded border border-gray-700 bg-gray-800 hover:bg-gray-700 transition-colors flex items-center justify-center"
                   >
                     <Check className="w-2.5 h-2.5 text-white" />
                   </button>
