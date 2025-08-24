@@ -15,13 +15,15 @@ jobs:
         username: ${{ secrets.VPS_USERNAME }}
         key: ${{ secrets.VPS_SSH_KEY }}
         script: |
-          echo "🚀 Starting deployment..."
+          echo "Starting deployment..."
           cd /app
           git pull origin main
+          echo "Code updated"
+          echo " Updating dependencies..."
           cd backend
           source venv/bin/activate
           pip install -r requirements-prod.txt
           echo "Dependencies updated"
-          echo "Restarting service..."
+          echo " Restarting service..."
           sudo systemctl restart eclipse-backend
           echo "Deployment completed at $(date)"
