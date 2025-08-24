@@ -11,6 +11,13 @@ import os
 import redis
 from typing import Optional
 
+try:
+    from upstash_redis import Redis as UpstashRedis
+    UPSTASH_AVAILABLE = True
+except ImportError:
+    UPSTASH_AVAILABLE = False
+    print("Warning: upstash-redis not installed. Install with: pip install upstash-redis")
+
 # Redis connection configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
@@ -22,28 +29,36 @@ REDIS_URL = os.getenv("REDIS_URL")
 UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
 UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
 
-# Redis client singleton
-_redis_client: Optional[redis.Redis] = None
+# Redis client singleton (can be Redis or UpstashRedis)
+_redis_client: Optional[redis.Redis | UpstashRedis] = None
 
-def get_redis_client() -> redis.Redis:
+def get_redis_client() -> redis.Redis | UpstashRedis:
     """Get Redis client instance (singleton pattern)"""
     global _redis_client
     
     if _redis_client is None:
-        if UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN:
-            # Use Upstash Redis REST API
-            _redis_client = redis.from_url(
-                UPSTASH_REDIS_REST_URL,
-                password=UPSTASH_REDIS_REST_TOKEN,
-                decode_responses=True,
-                socket_connect_timeout=10,
-                socket_timeout=10,
-                retry_on_timeout=True,
-                health_check_interval=30
+        # Debug: Print environment variables
+        print(f"Redis Config Debug:")
+        print(f"  UPSTASH_REDIS_REST_URL: {'SET' if UPSTASH_REDIS_REST_URL else 'NOT SET'}")
+        print(f"  UPSTASH_REDIS_REST_TOKEN: {'SET' if UPSTASH_REDIS_REST_TOKEN else 'NOT SET'}")
+        print(f"  REDIS_URL: {'SET' if REDIS_URL else 'NOT SET'}")
+        print(f"  REDIS_HOST: {REDIS_HOST}")
+        print(f"  REDIS_PORT: {REDIS_PORT}")
+        
+        if UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN and UPSTASH_AVAILABLE:
+            print("Using official Upstash Redis client")
+            # The Upstash Redis client expects the REST URL directly
+            print(f"Upstash URL: {UPSTASH_REDIS_REST_URL}")
+            
+            _redis_client = UpstashRedis(
+                url=UPSTASH_REDIS_REST_URL,
+                token=UPSTASH_REDIS_REST_TOKEN
             )
         elif REDIS_URL:
+            print("Using REDIS_URL")
             _redis_client = redis.from_url(REDIS_URL)
         else:
+            print(f"Using local Redis at {REDIS_HOST}:{REDIS_PORT}")
             _redis_client = redis.Redis(
                 host=REDIS_HOST,
                 port=REDIS_PORT,
@@ -57,8 +72,8 @@ def get_redis_client() -> redis.Redis:
         
         # Test connection
         try:
-            _redis_client.ping()
-            print("Redis connection established")
+            result = _redis_client.ping()
+            print(f"Redis connection established: {result}")
         except Exception as e:
             print(f"Redis connection failed: {e}")
             _redis_client = None
