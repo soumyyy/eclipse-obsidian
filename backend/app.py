@@ -1073,6 +1073,47 @@ async def transcribe_audio(audio: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
 
+# ----------------- FAISS Index Upload -----------------
+
+@app.post("/api/upload-index", dependencies=[Depends(require_api_key)])
+async def upload_faiss_index(files: List[UploadFile] = File(...)):
+    """Upload FAISS index files to the server"""
+    try:
+        # Ensure data directory exists
+        data_dir = "/app/data"
+        os.makedirs(data_dir, exist_ok=True)
+        
+        uploaded_files = []
+        for f in files:
+            try:
+                raw = await f.read()
+                filename = f.filename or "unknown"
+                
+                # Save the file to the data directory
+                file_path = os.path.join(data_dir, filename)
+                with open(file_path, "wb") as file:
+                    file.write(raw)
+                
+                uploaded_files.append(filename)
+                print(f"Successfully uploaded: {filename} to {file_path}")
+                
+            except Exception as e:
+                print(f"Error uploading {f.filename}: {e}")
+                continue
+        
+        if not uploaded_files:
+            return {"ok": False, "error": "No files were uploaded successfully"}
+        
+        return {
+            "ok": True, 
+            "uploaded": uploaded_files,
+            "message": f"Successfully uploaded {len(uploaded_files)} files to {data_dir}"
+        }
+        
+    except Exception as e:
+        print(f"Error in upload_faiss_index: {e}")
+        raise HTTPException(status_code=500, detail=f"Index upload failed: {str(e)}")
+
 # ----------------- Tasks endpoints -----------------
 
 class TaskIn(BaseModel):
