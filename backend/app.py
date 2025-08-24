@@ -253,18 +253,25 @@ EPHEMERAL_SESSIONS: Dict[str, Dict[str, object]] = {}
 def _ephemeral_add(session_id: str, texts_with_paths: List[Dict[str, str]]):
     if not session_id:
         return
-    rag = get_retriever()
-    embed_fn = rag.embed_fn
-    texts = [twp["text"] for twp in texts_with_paths]
-    if not texts:
-        return
-    vecs = embed_fn(texts)  # already L2-normalized float32
-    store = EPHEMERAL_SESSIONS.setdefault(session_id, {"vecs": None, "items": [], "recent": [], "last_added_at": 0.0})
-    old_vecs = store["vecs"]
-    if old_vecs is None:
-        store["vecs"] = vecs
-    else:
-        store["vecs"] = np.vstack([old_vecs, vecs])
+    try:
+        # Try to use RAG system if available
+        rag = get_retriever()
+        embed_fn = rag.embed_fn
+        texts = [twp["text"] for twp in texts_with_paths]
+        if not texts:
+            return
+        vecs = embed_fn(texts)  # already L2-normalized float32
+        store = EPHEMERAL_SESSIONS.setdefault(session_id, {"vecs": None, "items": [], "recent": [], "last_added_at": 0.0})
+        old_vecs = store["vecs"]
+        if old_vecs is None:
+            store["vecs"] = vecs
+        else:
+            store["vecs"] = np.vstack([old_vecs, vecs])
+    except Exception as e:
+        print(f"RAG system not available, using simple storage: {e}")
+        # Fallback: simple storage without embeddings
+        store = EPHEMERAL_SESSIONS.setdefault(session_id, {"vecs": None, "items": [], "recent": [], "last_added_at": 0.0})
+    
     # Track all items
     store["items"] = (store["items"] or []) + texts_with_paths
     # Track recency for stronger follow-up behavior
@@ -277,28 +284,57 @@ def _ephemeral_add(session_id: str, texts_with_paths: List[Dict[str, str]]):
 def _ephemeral_retrieve(session_id: Optional[str], query: str, top_k: int = 5):
     if not session_id or session_id not in EPHEMERAL_SESSIONS:
         return []
-    rag = get_retriever()
-    embed_fn = rag.embed_fn
-    qv = embed_fn(query)
-    store = EPHEMERAL_SESSIONS[session_id]
-    vecs: np.ndarray = store.get("vecs")  # type: ignore
-    items: List[Dict[str, str]] = store.get("items")  # type: ignore
-    if vecs is None or vecs.size == 0:
-        return []
-    # cosine via dot since vectors are L2-normalized
-    scores = vecs @ qv[0].astype(np.float32)
-    idx = np.argsort(-scores)[: top_k]
-    hits = []
-    for rank, i in enumerate(idx.tolist()):
-        item = items[i]
-        hits.append({
-            "rank": rank + 1,
-            "score": float(scores[i]),
-            "text": item.get("text", ""),
-            "path": item.get("path", "(upload)"),
-            "id": f"ephemeral::{i}",
-        })
-    return hits
+    try:
+        # Try to use RAG system if available
+        rag = get_retriever()
+        embed_fn = rag.embed_fn
+        qv = embed_fn(query)
+        store = EPHEMERAL_SESSIONS[session_id]
+        vecs: np.ndarray = store.get("vecs")  # type: ignore
+        items: List[Dict[str, str]] = store.get("items")  # type: ignore
+        if vecs is None or vecs.size == 0:
+            return []
+        # cosine via dot since vectors are L2-normalized
+        scores = vecs @ qv[0].astype(np.float32)
+        idx = np.argsort(-scores)[: top_k]
+        hits = []
+        for rank, i in enumerate(idx.tolist()):
+            item = items[i]
+            hits.append({
+                "rank": rank + 1,
+                "score": float(scores[i]),
+                "text": item.get("text", ""),
+                "path": item.get("path", "(upload)"),
+                "id": f"ephemeral::{i}",
+            })
+        return hits
+    except Exception as e:
+        print(f"RAG system not available, using simple text search: {e}")
+        # Fallback: simple text-based search
+        store = EPHEMERAL_SESSIONS[session_id]
+        items: List[Dict[str, str]] = store.get("items", [])  # type: ignore
+        if not items:
+            return []
+        
+        # Simple keyword-based search
+        query_lower = query.lower()
+        hits = []
+        for i, item in enumerate(items):
+            text = item.get("text", "").lower()
+            # Count matching words
+            score = sum(1 for word in query_lower.split() if word in text and len(word) > 2)
+            if score > 0:
+                hits.append({
+                    "rank": len(hits) + 1,
+                    "score": float(score),
+                    "text": item.get("text", ""),
+                    "path": item.get("path", "(upload)"),
+                    "id": f"ephemeral::{i}",
+                })
+        
+        # Sort by score and limit results
+        hits.sort(key=lambda x: x["score"], reverse=True)
+        return hits[:top_k]
 
 def _ephemeral_recent(session_id: Optional[str], max_items: int = 3) -> List[Dict[str, str]]:
     if not session_id or session_id not in EPHEMERAL_SESSIONS:
@@ -310,6 +346,7 @@ def _ephemeral_recent(session_id: Optional[str], max_items: int = 3) -> List[Dic
 # ----------------- Semantic memory retrieval (on-the-fly) -----------------
 def _semantic_memory_retrieve(user_id: str, query: str, limit: int = 5):
     try:
+        # Try to use RAG system if available
         rag = get_retriever()
         embed_fn = rag.embed_fn
         qv = embed_fn(query)[0].astype(np.float32)
@@ -360,8 +397,40 @@ def _semantic_memory_retrieve(user_id: str, query: str, limit: int = 5):
                 "id": f"mem::{mem.get('id')}",
             })
         return out
-    except Exception:
-        return []
+    except Exception as e:
+        print(f"RAG system not available for memory retrieval: {e}")
+        # Fallback: simple keyword-based memory search
+        try:
+            mems = list_memories(user_id, limit=limit)
+            if not mems:
+                return []
+            
+            query_lower = query.lower()
+            relevant_mems = []
+            
+            for mem in mems:
+                content = mem.get("content", "").lower()
+                # Count matching words
+                score = sum(1 for word in query_lower.split() if word in content and len(word) > 2)
+                if score > 0:
+                    relevant_mems.append((mem, score))
+            
+            # Sort by score and return top results
+            relevant_mems.sort(key=lambda x: x[1], reverse=True)
+            
+            out = []
+            for rank, (mem, score) in enumerate(relevant_mems[:limit]):
+                out.append({
+                    "rank": rank + 1,
+                    "score": float(score),
+                    "text": mem.get("content", ""),
+                    "path": f"(memory:{mem.get('type','note')})",
+                    "id": f"mem::{mem.get('id')}",
+                })
+            return out
+        except Exception as e2:
+            print(f"Fallback memory retrieval also failed: {e2}")
+            return []
 
 # ----------------- Query expansion + RRF across variants -----------------
 def _expand_queries(q: str) -> List[str]:
