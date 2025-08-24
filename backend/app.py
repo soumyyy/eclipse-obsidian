@@ -1114,6 +1114,43 @@ async def upload_faiss_index(files: List[UploadFile] = File(...)):
         print(f"Error in upload_faiss_index: {e}")
         raise HTTPException(status_code=500, detail=f"Index upload failed: {str(e)}")
 
+@app.post("/api/extract-index", dependencies=[Depends(require_api_key)])
+async def extract_faiss_index():
+    """Extract the uploaded data.zip file to /app/data/"""
+    try:
+        import zipfile
+        import shutil
+        
+        data_dir = "/app/data"
+        zip_path = os.path.join(data_dir, "data.zip")
+        
+        if not os.path.exists(zip_path):
+            raise HTTPException(status_code=404, detail="data.zip not found. Upload it first using /api/upload-index")
+        
+        # Extract the ZIP file
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(data_dir)
+        
+        # List extracted files
+        extracted_files = []
+        for root, dirs, files in os.walk(data_dir):
+            for file in files:
+                if file != "data.zip":  # Skip the zip file itself
+                    extracted_files.append(os.path.relpath(os.path.join(root, file), data_dir))
+        
+        # Remove the zip file to save space
+        os.remove(zip_path)
+        
+        return {
+            "ok": True,
+            "extracted": extracted_files,
+            "message": f"Successfully extracted {len(extracted_files)} files from data.zip"
+        }
+        
+    except Exception as e:
+        print(f"Error extracting index: {e}")
+        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
+
 # ----------------- Tasks endpoints -----------------
 
 class TaskIn(BaseModel):
