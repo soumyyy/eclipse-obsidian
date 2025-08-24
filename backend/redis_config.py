@@ -18,6 +18,10 @@ REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 REDIS_URL = os.getenv("REDIS_URL")
 
+# Upstash Redis configuration
+UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
+UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
+
 # Redis client singleton
 _redis_client: Optional[redis.Redis] = None
 
@@ -26,7 +30,18 @@ def get_redis_client() -> redis.Redis:
     global _redis_client
     
     if _redis_client is None:
-        if REDIS_URL:
+        if UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN:
+            # Use Upstash Redis REST API
+            _redis_client = redis.from_url(
+                UPSTASH_REDIS_REST_URL,
+                password=UPSTASH_REDIS_REST_TOKEN,
+                decode_responses=True,
+                socket_connect_timeout=10,
+                socket_timeout=10,
+                retry_on_timeout=True,
+                health_check_interval=30
+            )
+        elif REDIS_URL:
             _redis_client = redis.from_url(REDIS_URL)
         else:
             _redis_client = redis.Redis(

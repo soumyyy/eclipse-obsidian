@@ -3,7 +3,7 @@ services:
     name: eclipse-obsidian-backend
     env: python
     plan: starter
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements-prod.txt
     startCommand: chmod +x start.sh && ./start.sh
     envVars:
       - key: PYTHON_VERSION
@@ -16,7 +16,9 @@ services:
         sync: false
       - key: OPENAI_API_KEY
         sync: false
-      - key: REDIS_URL
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
         sync: false
       - key: VERCEL_SITE
         value: "https://your-frontend-domain.vercel.app"
