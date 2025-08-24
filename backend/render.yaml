@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: eclipse-obsidian-backend
+    env: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11
+      - key: BACKEND_API_KEY
+        generateValue: true
+      - key: ADMIN_API_KEY
+        generateValue: true
+      - key: CEREBRAS_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: VERCEL_SITE
+        value: "https://your-frontend-domain.vercel.app"
+      - key: ASSISTANT_NAME
+        value: "Eclipse"
+      - key: AUTO_MEMORY
+        value: "false"

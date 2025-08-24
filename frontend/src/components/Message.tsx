@@ -66,12 +66,12 @@ export default function Message({ role, content, formatted, attachments }: Messa
 
   return (
     <div className={isUser ? "flex justify-end" : "flex justify-start"}>
-      <div
+              <div
         className={[
           "relative max-w-[85%] rounded-2xl border shadow-sm",
           isUser
-            ? "px-5 sm:px-6 py-3.5 border-cyan-500/30 bg-cyan-950/20" 
-            : "px-6 sm:px-7 py-4 border-white/10 bg-gray-900/25 animate-slide-in-up",
+            ? "px-4 sm:px-5 py-3.5 border-cyan-500/30 bg-cyan-950/20" 
+            : "px-4 sm:px-5 py-4 border-white/10 bg-gray-900/25 animate-slide-in-up",
         ].join(" ")}
       >
         {isUser ? (
@@ -87,14 +87,14 @@ export default function Message({ role, content, formatted, attachments }: Messa
               </div>
             )}
             {content && (
-              <pre className="whitespace-pre-wrap break-words text-sm text-neutral-100">
-                {content}
-              </pre>
+          <pre className="whitespace-pre-wrap break-words text-sm text-neutral-100">
+            {content}
+          </pre>
             )}
           </div>
         ) : (
           <ReactMarkdown
-            className="prose prose-invert prose-sm max-w-none"
+            className="prose prose-invert prose-sm max-w-none [&_table]:my-0 [&_table]:mt-0 [&_table]:mb-0 [&_th]:pl-6 [&_th]:pr-6 [&_td]:pl-6 [&_td]:pr-6"
             remarkPlugins={[remarkGfm, remarkBreaks, remarkMath] as any}
             rehypePlugins={[
               rehypeKatex,
@@ -169,27 +169,27 @@ export default function Message({ role, content, formatted, attachments }: Messa
                   const language = className.replace("language-", "");
                   const codeString = String(children);
                   return (
-                    <div className="my-4 rounded-lg bg-gray-900/50 border border-gray-700/50">
-                      <div className="px-4 py-2 bg-gray-800/50 border-b border-gray-700/50 text-xs text-gray-400 flex items-center justify-between">
-                        <span>{language}</span>
+                    <div className="my-4 rounded-xl bg-black/60 border border-white/10">
+                      <div className="px-3 py-1.5 bg-black/50 border-b border-white/10 text-xs text-gray-400 flex items-center justify-between">
+                        <span className="uppercase tracking-wide opacity-70">{language}</span>
                         <button
                           type="button"
                           onClick={async () => { try { await navigator.clipboard.writeText(codeString); } catch {} }}
-                          className="text-gray-300 hover:text-white"
+                          className="px-2 py-0.5 rounded border border-white/10 text-gray-300 hover:text-white hover:bg-white/10"
                           aria-label="Copy code"
                         >
                           Copy
                         </button>
                       </div>
-                      <pre className="p-4 overflow-x-auto"><code className="text-sm font-mono text-gray-100">{codeString}</code></pre>
+                      <pre className="p-4 overflow-x-auto text-sm leading-relaxed"><code className="text-gray-100">{codeString}</code></pre>
                     </div>
                   );
                 }
-                return <code className="px-1.5 py-0.5 bg-gray-800/50 rounded text-sm font-mono text-cyan-300">{children}</code>;
+                return <code className="px-1.5 py-0.5 bg-black/40 rounded text-sm font-mono text-gray-200">{children}</code>;
               },
               
               table: ({children}) => (
-                <div className="my-4 overflow-x-auto rounded-xl border border-gray-700/60 bg-gray-900/30 shadow-sm ring-1 ring-white/5 inline-block max-w-full">
+                <div className="my-0 overflow-x-auto rounded-xl border border-gray-700/60 bg-gray-900/30 shadow-sm ring-1 ring-white/5 inline-block max-w-full">
                   <table className="w-full border-separate border-spacing-0">
                     {children}
                   </table>
@@ -197,13 +197,13 @@ export default function Message({ role, content, formatted, attachments }: Messa
               ),
               
               th: ({children}) => (
-                <th className="px-3.5 py-2.5 bg-gray-800/70 supports-[backdrop-filter]:bg-gray-800/50 text-white font-semibold text-left text-sm whitespace-pre-wrap break-words align-top sticky -top-px z-10 border-b border-gray-700/60 first:rounded-tl-xl last:rounded-tr-xl">
+                <th className="!pl-3 !pr-6 py-2.5 bg-gray-800/70 supports-[backdrop-filter]:bg-gray-800/50 text-white font-semibold text-left text-sm whitespace-pre-wrap break-words align-top sticky -top-px z-10 border-b border-gray-700/60 first:rounded-tl-xl last:rounded-tr-xl">
                   {children}
                 </th>
               ),
               
               td: ({children}) => (
-                <td className="px-3.5 py-2.5 text-gray-100 text-sm whitespace-pre-wrap break-words align-top border-b border-gray-700/50">
+                <td className="!pl-3 !pr-6 py-2.5 text-gray-100 text-sm whitespace-pre-wrap break-words align-top border-b border-gray-700/50">
                   {children}
                 </td>
               ),

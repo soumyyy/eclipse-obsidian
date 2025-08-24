@@ -80,21 +80,50 @@ def render_markdown(ans: JsonAnswer, prefer_table: bool = False, prefer_compact:
         h = _sanitize_inline(sec.heading or "")
         if h:
             lines.append(f"## {h}")
-        bullets = [
-            _sanitize_inline(b)
-            for b in (sec.bullets or [])
-            if _sanitize_inline(b) and not re.fullmatch(r"[•\-—|.]+", _sanitize_inline(b))
-        ]
-        if bullets:
-            # Detect numeric-ordered bullets like "1. Step", "2) Next" and render as an ordered list
-            is_ordered = all(re.match(r"^\s*\d+[\.)]\s+", b) for b in bullets)
+        raw_bullets = (sec.bullets or [])
+        # Convert bullets, preserving code blocks when present
+        cooked_bullets = []
+        for b in raw_bullets:
+            if not b:
+                continue
+            # If bullet already contains fenced code, keep as-is
+            if "```" in b:
+                cooked_bullets.append({"type": "code", "lang": None, "code": b})
+                continue
+            # Single-backtick language prefix like `python...`
+            m = re.match(r"^`(python|py|js|ts|javascript|typescript|bash|sh|shell|json|yaml|yml)\s+([\s\S]*?)`$", b.strip(), flags=re.I)
+            if m:
+                lang = m.group(1).lower()
+                code = m.group(2)
+                cooked_bullets.append({"type": "code", "lang": lang, "code": code})
+                continue
+            # Heuristic: long multi-symbol text that looks like code
+            if ("def " in b or "class " in b or "return" in b or ";" in b) and (len(b) > 80):
+                cooked_bullets.append({"type": "code", "lang": None, "code": b})
+                continue
+            # Default: normal text bullet (sanitize)
+            sb = _sanitize_inline(b)
+            if sb and not re.fullmatch(r"[•\-—|.]+", sb):
+                cooked_bullets.append({"type": "text", "text": sb})
+
+        if cooked_bullets:
+            # Detect numeric-ordered bullets among text bullets
+            text_values = [x.get("text", "") for x in cooked_bullets if x["type"] == "text"]
+            is_ordered = (len(text_values) == len(cooked_bullets)) and all(re.match(r"^\s*\d+[\.)]\s+", t) for t in text_values)
             if is_ordered:
-                for i, b in enumerate(bullets, start=1):
-                    clean = re.sub(r"^\s*\d+[\.)]\s+", "", b).strip()
+                for i, t in enumerate(text_values, start=1):
+                    clean = re.sub(r"^\s*\d+[\.)]\s+", "", t).strip()
                     lines.append(f"{i}. {clean}")
             else:
-                for b in bullets:
-                    lines.append(f"- {b}")
+                for entry in cooked_bullets:
+                    if entry["type"] == "text":
+                        lines.append(f"- {entry['text']}")
+                    else:
+                        lang = entry.get("lang") or ""
+                        code = entry.get("code", "")
+                        lines.append(f"```{lang}".rstrip())
+                        lines.append(code.rstrip("\n"))
+                        lines.append("```")
         table = getattr(sec, "table", None) or {}
         headers = table.get("headers") if isinstance(table, dict) else None
         rows = table.get("rows") if isinstance(table, dict) else None
