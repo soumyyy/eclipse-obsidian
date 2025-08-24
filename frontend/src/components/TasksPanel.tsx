@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { X, Plus, Check, Clock } from "lucide-react";
+import { X, Plus, Check } from "lucide-react";
 
 interface Task {
   id: number;

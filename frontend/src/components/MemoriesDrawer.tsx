@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 type Mem = { id: number; ts: number; type: string; content: string };
 
@@ -22,7 +22,7 @@ export default function MemoriesDrawer({ userId }: { userId: string }) {
     setLoading(false);
   }
 
-  useEffect(() => { if (open) load(); }, [open]);
+  useEffect(() => { if (open) load(); }, [open, load]);
 
   async function save(mem: Mem) {
     const r = await fetch("/api/memories", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mem_id: mem.id, user_id: userId, content: mem.content, type: mem.type }) });

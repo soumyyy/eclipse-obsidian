@@ -27,7 +27,7 @@ export default function ReviewDrawer({ userId }: { userId: string }) {
     setLoading(false);
   }
 
-  useEffect(() => { if (open) load(); }, [open]);
+  useEffect(() => { if (open) load(); }, [open, load]);
 
   async function approve(id: number) {
     const r = await fetch(`/api/memories/pending/${id}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: userId }) });

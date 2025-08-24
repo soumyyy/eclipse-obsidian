@@ -8,8 +8,9 @@ export async function GET() {
     const data = await resp.json();
     if (!resp.ok) return NextResponse.json({ ok: false, error: data?.detail || "Upstream error" }, { status: resp.status });
     return NextResponse.json({ ok: true, data });
-  } catch (err: any) {
-    return NextResponse.json({ ok: false, error: err?.message || "Unexpected error" }, { status: 500 });
+  } catch (err: unknown) {
+    const errorMessage = err instanceof Error ? err.message : "Unexpected error";
+    return NextResponse.json({ ok: false, error: errorMessage }, { status: 500 });
   }
 }
 

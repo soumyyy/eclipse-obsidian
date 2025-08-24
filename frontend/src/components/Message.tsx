@@ -95,11 +95,11 @@ export default function Message({ role, content, formatted, attachments }: Messa
         ) : (
           <ReactMarkdown
             className="prose prose-invert prose-sm max-w-none [&_table]:my-0 [&_table]:mt-0 [&_table]:mb-0 [&_th]:pl-6 [&_th]:pr-6 [&_td]:pl-6 [&_td]:pr-6"
-            remarkPlugins={[remarkGfm, remarkBreaks, remarkMath] as any}
+            remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
             rehypePlugins={[
               rehypeKatex,
               [rehypeSanitize, { ...defaultSchema }],
-            ] as any}
+            ]}
             components={{
               h1: ({children}) => (
                 <h1 className="text-xl font-bold text-white mb-3 mt-4 first:mt-0 border-b border-gray-700 pb-2">{children}</h1>

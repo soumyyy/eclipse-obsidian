@@ -2,8 +2,7 @@
 import { useEffect, useState } from "react";
 
 type Task = { id: number; content: string; due_ts?: number; status: string; created_ts: number };
-type Pending = { id: number; type: string; content: string };
-type Mem = { id: number; ts: number; type: string; content: string };
+
 
 export default function TasksDrawer({ userId, asHeader }: { userId: string; asHeader?: boolean }) {
   const [open, setOpen] = useState(false);
@@ -19,7 +18,7 @@ export default function TasksDrawer({ userId, asHeader }: { userId: string; asHe
     const d = await r.json();
     if (d.ok) setTasks(d.tasks || []);
   }
-  useEffect(() => { if (open) load(); }, [open]);
+  useEffect(() => { if (open) load(); }, [open, load]);
 
   // Listen for global toggle event from keyboard shortcuts
   useEffect(() => {

@@ -32,8 +32,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: data?.error?.message || "Transcription failed" }, { status: resp.status });
     }
     return NextResponse.json({ ok: true, text: data.text || "" });
-  } catch (err: any) {
-    return NextResponse.json({ error: err?.message || "Unexpected error" }, { status: 500 });
+  } catch (err: unknown) {
+    const errorMessage = err instanceof Error ? err.message : "Unexpected error";
+    return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 }
 

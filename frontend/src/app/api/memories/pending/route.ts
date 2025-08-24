@@ -17,8 +17,9 @@ export async function GET(req: NextRequest) {
     });
     const data = await resp.json();
     return NextResponse.json(data, { status: resp.status });
-  } catch (err: any) {
-    return NextResponse.json({ ok: false, error: err?.message || "Unexpected error" }, { status: 500 });
+  } catch (err: unknown) {
+    const errorMessage = err instanceof Error ? err.message : "Unexpected error";
+    return NextResponse.json({ ok: false, error: errorMessage }, { status: 500 });
   }
 }
 

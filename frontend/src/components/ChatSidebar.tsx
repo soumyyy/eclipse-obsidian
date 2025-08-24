@@ -5,7 +5,6 @@ import {
   Plus, 
   MessageSquare, 
   Trash2, 
-  Settings,
   X,
   ChevronRight
 } from "lucide-react";

@@ -6,7 +6,7 @@ import Sound from "@/components/Sound";
 import HUD from "@/components/HUD";
 import TasksPanel from "@/components/TasksPanel";
 import ChatSidebar from "@/components/ChatSidebar";
-import { Plus, Mic, SendHorizonal, Menu, MessageSquare } from "lucide-react";
+import { Plus, Mic, SendHorizonal, MessageSquare } from "lucide-react";
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -116,7 +116,7 @@ export default function Home() {
       
       if (response.ok) {
         const data = await response.json();
-        const historyMessages: ChatMessage[] = (data.messages || []).map((msg: any) => ({
+        const historyMessages: ChatMessage[] = (data.messages || []).map((msg: { role: string; content: string; sources?: { path: string; score: number }[] }) => ({
           role: msg.role,
           content: msg.content,
           sources: msg.sources || [],
@@ -410,11 +410,7 @@ export default function Home() {
     setRecording(false);
   }
 
-  function clearChat() {
-    setMessages([]);
-    try { if (typeof window !== "undefined") localStorage.removeItem(STORAGE_KEY); } catch {}
-    inputRef.current?.focus();
-  }
+
 
   // Drag & drop uploads (PDF/MD) — ephemeral per-session
   // Files are now handled as pending attachments until manually sent

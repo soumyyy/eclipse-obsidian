@@ -14,8 +14,9 @@ export default function UrlSummarizer() {
       const d = await r.json();
       if (d.ok) setRes({ title: d.title, summary: d.summary, url: d.url });
       else setRes({ title: "Error", summary: d.error || "" });
-    } catch (e: any) {
-      setRes({ title: "Error", summary: e?.message || String(e) });
+    } catch (e: unknown) {
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      setRes({ title: "Error", summary: errorMessage });
     } finally {
       setLoading(false);
     }

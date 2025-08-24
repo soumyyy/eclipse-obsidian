@@ -37,7 +37,6 @@ export default function MemoriesPage() {
 
   useEffect(() => {
     fetchMemories();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchMemories = async () => {
