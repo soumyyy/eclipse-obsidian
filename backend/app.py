@@ -26,6 +26,8 @@ from memory_extractor import extract_and_store_memories, run_memory_maintenance
 from redis_config import RedisOps, RedisKeys
 from llm_cerebras import cerebras_chat   # Cerebras chat wrapper
 from memory_extractor import extract_and_store_memories
+from cot_utils import should_apply_cot, build_cot_hint, inject_cot_hint
+from formatting import JsonAnswer, Section, ensure_json_and_markdown, render_markdown, fallback_sanitize
 from bs4 import BeautifulSoup
 import requests
 
@@ -77,14 +79,9 @@ class Table(BaseModel):
     headers: List[str] = []
     rows: List[List[str]] = []
 
-class Section(BaseModel):
-    heading: str
-    bullets: List[str] = []
-    table: Optional[Table] = None
-
-class JsonAnswer(BaseModel):
-    title: str
-    sections: List[Section] = []
+class Table(BaseModel):
+    headers: List[str] = []
+    rows: List[List[str]] = []
 
 # ----------------- Auth helpers -----------------
 def require_api_key(x_api_key: Optional[str] = Header(default=None)):
@@ -125,6 +122,7 @@ Response Guidelines:
 3. Keep responses conversational and contextual - reference memories and context as if they're part of a natural conversation.
 4. If memories or context are relevant, weave them into your response naturally rather than listing them separately.
 5. Focus on being helpful and relevant rather than formal or structured.
+6. You may privately think step-by-step to reach a correct answer, but never reveal chain-of-thought; output only the final JSON per schema.
 
 Flavor:
 1. Address the user with a title ("Sir") or by name ("Soumya").
@@ -178,111 +176,44 @@ def build_messages(user_id: str, user_msg: str, context: str, memories_text: str
         {"role": "user", "content": user_msg},
     ]
 
+# ----------------- CoT helpers -----------------
+def should_apply_cot(user_msg: str) -> bool:
+    q = (user_msg or "").lower()
+    cot_triggers = [
+        r"\b(plan|design|architect|strategy|steps|algorithm|derive|prove|analyze|compare|trade[- ]offs?)\b",
+        r"\bhow (?:do|would|to)\b",
+        r"\bwhy\b",
+        r"\broot cause\b",
+        r"\bdebug|investigate|optimi[sz]e\b",
+        r"\bconstraints?\b",
+    ]
+    return any(re.search(p, q, flags=re.I) for p in cot_triggers) or len(q.split()) >= 14
+
+def build_cot_hint() -> str:
+    return (
+        "You may use hidden, internal chain-of-thought to reason (do NOT reveal it)."
+        " Think step by step privately and only output the final JSON per schema."
+    )
+
+def inject_cot_hint(messages: List[Dict], hint: str) -> List[Dict]:
+    if not messages or not hint:
+        return messages
+    # Insert just before the final user message if present
+    idx = len(messages) - 1 if messages and messages[-1].get("role") == "user" else len(messages)
+    return [*messages[:idx], {"role": "system", "content": hint}, *messages[idx:]]
+
 # ----------------- Post-formatting helpers -----------------
-def _sanitize_inline(text: str) -> str:
-    if not text:
-        return ""
-    # Normalize unicode spaces, remove zero-width / soft hyphen
-    text = re.sub(r"[\u00A0\u202F\u2007]", " ", text)
-    text = re.sub(r"[\u200B-\u200D\u2060\u00AD]", "", text)
-    # Stitch mid-word newlines and collapse remaining newlines to spaces
-    text = re.sub(r"([A-Za-z0-9])\s*\n\s*([A-Za-z0-9])", r"\1\2", text)
-    text = re.sub(r"\s*\n\s*", " ", text)
-    # Collapse multiple spaces
-    text = re.sub(r"\s{2,}", " ", text)
-    return text.strip()
+_sanitize_inline = None  # moved to formatting.py
 
-def _render_markdown(ans: JsonAnswer, prefer_table: bool = False, prefer_compact: bool = False) -> str:
-    lines: List[str] = []
-    title = _sanitize_inline(ans.title or "")
-    # Compact mode: avoid headings for trivial replies
-    if not prefer_compact and title:
-        lines.append(f"# {title}")
-        lines.append("")
-    sections = ans.sections or []
+_render_markdown = None  # moved to formatting.py
 
-    # If table preferred and no explicit tables present, synthesize one from sections
-    has_any_table = any(bool(getattr(s, "table", None)) for s in sections)
-    if prefer_table and not has_any_table and sections:
-        headers = ["Category", "Details"]
-        rows: List[List[str]] = []
-        for s in sections:
-            h = _sanitize_inline(s.heading or "")
-            bullets = [
-                _sanitize_inline(b)
-                for b in (s.bullets or [])
-                if _sanitize_inline(b) and not re.fullmatch(r"[•\-—|.]+", _sanitize_inline(b))
-            ]
-            details = "; ".join(bullets)
-            if h or details:
-                rows.append([h, details])
-        if rows:
-            lines.append("| " + " | ".join(headers) + " |")
-            lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
-            for r in rows:
-                lines.append("| " + " | ".join(r) + " |")
-            return "\n".join(lines).strip()
-
-    # Compact rendering for trivial content (e.g., simple greeting)
-    if prefer_compact:
-        if not sections:
-            return ""
-        sec0 = sections[0]
-        bullets = [
-            _sanitize_inline(b)
-            for b in (sec0.bullets or [])
-            if _sanitize_inline(b) and not re.fullmatch(r"[•\-—|.]+", _sanitize_inline(b))
-        ]
-        if bullets:
-            return bullets[0]
-
-    for sec in sections:
-        h = _sanitize_inline(sec.heading or "")
-        if h:
-            lines.append(f"## {h}")
-        bullets = [
-            _sanitize_inline(b)
-            for b in (sec.bullets or [])
-            if _sanitize_inline(b) and not re.fullmatch(r"[•\-—|.]+", _sanitize_inline(b))
-        ]
-        if bullets:
-            for b in bullets:
-                lines.append(f"- {b}")
-        if sec.table and (sec.table.headers or sec.table.rows):
-            hdrs = [str(h).strip() for h in (sec.table.headers or [])]
-            if hdrs:
-                lines.append("| " + " | ".join(hdrs) + " |")
-                lines.append("| " + " | ".join(["---"] * len(hdrs)) + " |")
-            for row in (sec.table.rows or []):
-                cells = [str(c).strip() for c in row]
-                lines.append("| " + " | ".join(cells) + " |")
-        lines.append("")
-    out = "\n".join(lines).strip()
-    return out or ""
-
-def _fallback_sanitize(raw: str) -> str:
-    try:
-        txt = str(raw or "")
-        # Normalize unicode spaces and remove zero-width/soft hyphen
-        txt = re.sub(r"[\u00A0\u202F\u2007]", " ", txt)
-        txt = re.sub(r"[\u200B-\u200D\u2060\u00AD]", "", txt)
-        # Stitch mid-word newlines like "Overvie\nw" => "Overview"
-        txt = re.sub(r"([A-Za-z0-9])\s*\n\s*([A-Za-z0-9])", r"\1\2", txt)
-        # Collapse 3+ blank lines to 2; keep single newlines intact
-        txt = re.sub(r"\n{3,}", "\n\n", txt)
-        # Remove stray single-letter lines
-        txt = re.sub(r"^\s*[A-Za-z]\s*$", "", txt, flags=re.M)
-        # Trim trailing spaces on lines
-        txt = re.sub(r"[ \t]+\n", "\n", txt)
-        return txt.strip()
-    except Exception:
-        return str(raw or "")
+_fallback_sanitize = None  # moved to formatting.py
 
 def _ensure_json_and_markdown(raw: str, prefer_table: bool = False, prefer_compact: bool = False) -> Tuple[Optional[JsonAnswer], str]:
     try:
         obj = json.loads(raw)
         ans = JsonAnswer(**obj)
-        return ans, _render_markdown(ans, prefer_table=prefer_table, prefer_compact=prefer_compact)
+        return ans, render_markdown(ans, prefer_table=prefer_table, prefer_compact=prefer_compact)
     except Exception:
         # Attempt a one-shot repair call to coerce into schema
         try:
@@ -294,10 +225,11 @@ def _ensure_json_and_markdown(raw: str, prefer_table: bool = False, prefer_compa
             fixed = cerebras_chat(repair_prompt, temperature=0.0, max_tokens=1000)
             obj = json.loads(fixed)
             ans = JsonAnswer(**obj)
-            return ans, _render_markdown(ans, prefer_table=prefer_table, prefer_compact=prefer_compact)
+            return ans, render_markdown(ans, prefer_table=prefer_table, prefer_compact=prefer_compact)
         except Exception:
             # Fallback: keep structure; minimal cleanup only
-            return None, _fallback_sanitize(raw)
+            from formatting import fallback_sanitize as _fb
+            return None, _fb(raw)
 
 # ----------------- Retriever singleton -----------------
 _retriever: Optional[RAG] = None
@@ -627,49 +559,52 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
 
     # Retrieve context from FAISS + ephemeral + semantic memories
     try:
-      retriever = get_retriever()
-      # Query expansion across variants + RRF
-      variants = _expand_queries(payload.message) or [payload.message]
-      dense_lists: List[List[Dict]] = []
-      for vq in variants[:6]:
-        _, hlist = retriever.build_context(vq)
-        dense_lists.append(hlist)
-      hits = _rrf_merge(dense_lists, top_k=5)
-      mem_sem_hits = _semantic_memory_retrieve(payload.user_id, payload.message, limit=5)
-      eph_hits = _ephemeral_retrieve(payload.session_id, payload.message, top_k=5)
-      # Final RRF merge across sources, then build context
-      all_hits = _rrf_merge([eph_hits, mem_sem_hits, hits], top_k=8)
-      
-      # Include uploaded file content in context if available
-      file_context = ""
-      if payload.session_id and payload.session_id in EPHEMERAL_SESSIONS:
-        try:
-          items = EPHEMERAL_SESSIONS[payload.session_id].get("items") or []
-          if items:
-            # Only include file content if it's relevant to the query
-            relevant_items = []
-            query_lower = payload.message.lower()
-            for item in items[:3]:
-              item_text = item.get('text', '').lower()
-              # Check if file content is relevant to the query
-              if any(word in item_text for word in query_lower.split() if len(word) > 3):
-                relevant_items.append(item)
-            
-            if relevant_items:
-              file_context = "\n\n" + "\n\n".join(f"Content from {item.get('path', 'upload')}:\n{item.get('text', '')}" for item in relevant_items)
-        except Exception:
-          pass
-      
-      # Build more natural context
-      context_parts = []
-      if all_hits:
-        context_parts.append("\n\n".join(f"[{i+1}] {h['text']}" for i, h in enumerate(all_hits)))
-      if file_context:
-        context_parts.append(file_context)
-      
-      context = "\n\n".join(context_parts) if context_parts else ""
+        retriever = get_retriever()
+        # Query expansion across variants + RRF
+        variants = _expand_queries(payload.message) or [payload.message]
+        dense_lists: List[List[Dict]] = []
+        for vq in variants[:6]:
+            _, hlist = retriever.build_context(vq)
+            dense_lists.append(hlist)
+        hits = _rrf_merge(dense_lists, top_k=5)
+        mem_sem_hits = _semantic_memory_retrieve(payload.user_id, payload.message, limit=5)
+        eph_hits = _ephemeral_retrieve(payload.session_id, payload.message, top_k=5)
+        # Final RRF merge across sources, then build context
+        all_hits = _rrf_merge([eph_hits, mem_sem_hits, hits], top_k=8)
+        
+        # Include uploaded file content in context if available
+        file_context = ""
+        if payload.session_id and payload.session_id in EPHEMERAL_SESSIONS:
+            try:
+                items = EPHEMERAL_SESSIONS[payload.session_id].get("items") or []
+                if items:
+                    # Only include file content if it's relevant to the query
+                    relevant_items = []
+                    query_lower = payload.message.lower()
+                    for item in items[:3]:
+                        item_text = item.get('text', '').lower()
+                        # Check if file content is relevant to the query
+                        if any(word in item_text for word in query_lower.split() if len(word) > 3):
+                            relevant_items.append(item)
+                    
+                    if relevant_items:
+                        file_context = "\n\n" + "\n\n".join(
+                            f"Content from {item.get('path', 'upload')}:\n{item.get('text', '')}"
+                            for item in relevant_items
+                        )
+            except Exception:
+                pass
+        
+        # Build more natural context
+        context_parts = []
+        if all_hits:
+            context_parts.append("\n\n".join(f"[{i+1}] {h['text']}" for i, h in enumerate(all_hits)))
+        if file_context:
+            context_parts.append(file_context)
+        
+        context = "\n\n".join(context_parts) if context_parts else ""
     except Exception as e:
-      raise HTTPException(status_code=400, detail=f"Retriever not ready: {e}. Run `python ingest.py`.") from e
+        raise HTTPException(status_code=400, detail=f"Retriever not ready: {e}. Run `python ingest.py`.") from e
 
     # Recall memories (defensive formatting)
     mems = recall_memories(payload.user_id, limit=6)
@@ -705,7 +640,7 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
     memories_text = "\n".join(_fmt_mem_row(r) for r in (mems or []))
     if conversation_context:
         memories_text = memories_text + conversation_context
-    
+
     uploads_info = None
     if payload.session_id and payload.session_id in EPHEMERAL_SESSIONS:
         try:
@@ -721,6 +656,8 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
             uploads_info = "present"
     
     messages = build_messages(payload.user_id, payload.message, context, memories_text, uploads_info)
+    if should_apply_cot(payload.message):
+        messages = inject_cot_hint(messages, build_cot_hint())
     reply = cerebras_chat(messages, temperature=0.3, max_tokens=2000)
     # Try to coerce to JSON-first answer and render deterministic markdown
     # Fix word-boundary: single backslash in raw regex literal
@@ -800,7 +737,7 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
         
         context = "\n\n".join(context_parts) if context_parts else ""
     except Exception as e:
-      raise HTTPException(status_code=400, detail=f"Retriever not ready: {e}. Run `python ingest.py`.") from e
+        raise HTTPException(status_code=400, detail=f"Retriever not ready: {e}. Run `python ingest.py`.") from e
 
     mems = recall_memories(payload.user_id, limit=6)
     
@@ -831,6 +768,8 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
             uploads_info = "present"
     
     messages = build_messages(payload.user_id, payload.message, context, memories_text, uploads_info)
+    if should_apply_cot(payload.message):
+        messages = inject_cot_hint(messages, build_cot_hint())
 
     from llm_cerebras import cerebras_chat_stream
 
