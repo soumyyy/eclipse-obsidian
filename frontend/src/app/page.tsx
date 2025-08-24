@@ -56,8 +56,8 @@ export default function Home() {
   });
   const listRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
-  const dropRef = useRef<HTMLDivElement | null>(null);
-  const [dragOver, setDragOver] = useState(false);
+
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [recording, setRecording] = useState(false);
@@ -267,12 +267,7 @@ export default function Home() {
         save_task = trimmed.replace(/^\/(task)\s+/i, "");
       }
 
-      // Debug: Log what's being sent
-      console.log('🔍 Debug - NEXT_PUBLIC_BACKEND_URL:', process.env.NEXT_PUBLIC_BACKEND_URL);
-      console.log('🔍 Debug - NEXT_PUBLIC_BACKEND_TOKEN:', process.env.NEXT_PUBLIC_BACKEND_TOKEN);
-      console.log('🔍 Debug - API Key being sent:', process.env.NEXT_PUBLIC_BACKEND_TOKEN || '');
-      console.log('🔍 Debug - Full URL:', `${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/chat/stream`);
-      
+
       const resp = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/chat/stream`, {
         method: "POST",
         headers: { 
@@ -418,20 +413,9 @@ export default function Home() {
 
 
 
-  // Drag & drop uploads (PDF/MD) — ephemeral per-session
-  // Files are now handled as pending attachments until manually sent
-
+  // Paste functionality for text and code
   useEffect(() => {
-    const el = dropRef.current || document;
-    const onDragOver = (e: DragEvent) => { e.preventDefault(); setDragOver(true); };
-    const onDragLeave = (e: DragEvent) => { e.preventDefault(); setDragOver(false); };
-    const onDrop = async (e: DragEvent) => {
-      e.preventDefault(); setDragOver(false);
-      const files = Array.from(e.dataTransfer?.files || []);
-      if (!files.length) return;
-      // Don't auto-upload, just add to pending files
-      setPendingFiles((prev) => [...prev, ...files]);
-    };
+    const el = document;
     const onPaste = async (e: ClipboardEvent) => {
       if (!e.clipboardData) return;
       const items = e.clipboardData.items;
@@ -458,17 +442,11 @@ export default function Home() {
         }
       }
     };
-    el.addEventListener('dragover', onDragOver as EventListener);
-    el.addEventListener('dragleave', onDragLeave as EventListener);
-    el.addEventListener('drop', onDrop as unknown as EventListener);
     el.addEventListener('paste', onPaste as unknown as EventListener);
     return () => {
-      el.removeEventListener('dragover', onDragOver as EventListener);
-      el.removeEventListener('dragleave', onDragLeave as EventListener);
-      el.removeEventListener('drop', onDrop as unknown as EventListener);
       el.removeEventListener('paste', onPaste as unknown as EventListener);
     };
-  }, [sessionId]);
+  }, []);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-black via-gray-900 to-black text-white">
