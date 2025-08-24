@@ -42,12 +42,12 @@ export default function ChatSidebar({
     }
   }, [isOpen]);
 
-  const fetchSessions = async () => {
-    try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/api/sessions?user_id=soumya`, {
-        headers: {
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
-        }
+      const fetchSessions = async () => {
+      try {
+        const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/api/sessions?user_id=soumya`, {
+          headers: {
+            'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
+          }
       });
       if (response.ok) {
         const data = await response.json();
@@ -66,7 +66,7 @@ export default function ChatSidebar({
         method: "POST",
         headers: {
           'Content-Type': 'application/json',
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
         },
         body: JSON.stringify({
           user_id: "soumya",
@@ -94,7 +94,7 @@ export default function ChatSidebar({
       const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/api/sessions/${sessionId}`, {
         method: "DELETE",
         headers: {
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
         }
       });
       
@@ -119,7 +119,7 @@ export default function ChatSidebar({
         method: "POST",
         headers: {
           'Content-Type': 'application/json',
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
         },
         body: JSON.stringify({
           user_id: "soumya",

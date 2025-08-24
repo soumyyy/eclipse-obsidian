@@ -43,7 +43,7 @@ export default function MemoriesPage() {
     try {
       const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/memories?user_id=soumya`, {
         headers: {
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
         }
       });
       if (response.ok) {
@@ -61,7 +61,7 @@ export default function MemoriesPage() {
       const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/admin/memory/maintenance`, { 
         method: "POST",
         headers: {
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
         }
       });
       const data = await response.json();
@@ -84,7 +84,7 @@ export default function MemoriesPage() {
       const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/memories/${memoryId}`, {
         method: "DELETE",
         headers: {
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
         }
       });
       
@@ -108,7 +108,7 @@ export default function MemoriesPage() {
         method: "POST",
         headers: {
           'Content-Type': 'application/json',
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
         },
         body: JSON.stringify({
           user_id: "soumya",

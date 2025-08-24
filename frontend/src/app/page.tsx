@@ -77,12 +77,12 @@ export default function Home() {
   const createNewChatSession = async () => {
     try {
       setCreatingSession(true);
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/api/sessions`, {
-        method: "POST",
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
-        },
+              const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/api/sessions`, {
+          method: "POST",
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
+          },
         body: JSON.stringify({
           user_id: "soumya",
           title: "New Chat"
@@ -108,10 +108,10 @@ export default function Home() {
     
     // Load session history from Redis
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/api/sessions/${sessionId}/history?user_id=soumya`, {
-        headers: {
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
-        }
+              const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/api/sessions/${sessionId}/history?user_id=soumya`, {
+          headers: {
+            'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
+          }
       });
       
       if (response.ok) {
@@ -192,7 +192,7 @@ export default function Home() {
           method: "POST",
           headers: {
             'Content-Type': 'application/json',
-            'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+            'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
           },
           body: JSON.stringify({
             user_id: "soumya",
@@ -226,7 +226,7 @@ export default function Home() {
             method: 'POST', 
             body: form,
             headers: {
-              'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+              'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
             }
           });
           const d = await r.json();
@@ -250,7 +250,7 @@ export default function Home() {
         if (messages.length === 0 && currentSessionId) {
           await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/api/sessions/${currentSessionId}/title?user_id=soumya&title=${encodeURIComponent(userMsg.content.slice(0, 80))}`, {
             method: 'POST',
-            headers: { 'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop' }
+                          headers: { 'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || '' }
           });
         }
       } catch {}
@@ -267,11 +267,17 @@ export default function Home() {
         save_task = trimmed.replace(/^\/(task)\s+/i, "");
       }
 
+      // Debug: Log what's being sent
+      console.log('🔍 Debug - NEXT_PUBLIC_BACKEND_URL:', process.env.NEXT_PUBLIC_BACKEND_URL);
+      console.log('🔍 Debug - NEXT_PUBLIC_BACKEND_TOKEN:', process.env.NEXT_PUBLIC_BACKEND_TOKEN);
+      console.log('🔍 Debug - API Key being sent:', process.env.NEXT_PUBLIC_BACKEND_TOKEN || '');
+      console.log('🔍 Debug - Full URL:', `${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/chat/stream`);
+      
       const resp = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/chat/stream`, {
         method: "POST",
         headers: { 
           "Content-Type": "application/json",
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
         },
         body: JSON.stringify({ user_id: "soumya", message: userMsg.content, save_fact, make_note, save_task, session_id: currentSessionId }),
       });
@@ -507,7 +513,7 @@ export default function Home() {
                       const r = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/admin/reindex`, { 
                         method: "POST",
                         headers: {
-                          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+                          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
                         }
                       });
                       const d = await r.json();

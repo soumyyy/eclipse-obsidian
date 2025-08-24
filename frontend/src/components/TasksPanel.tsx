@@ -34,7 +34,7 @@ export default function TasksPanel({ isOpen, onClose }: TasksPanelProps) {
       const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/tasks?user_id=soumya&status=open&limit=200`, { 
         cache: "no-store",
         headers: {
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
         }
       });
       const data = await response.json();
@@ -53,7 +53,7 @@ export default function TasksPanel({ isOpen, onClose }: TasksPanelProps) {
         method: "POST",
         headers: { 
           "Content-Type": "application/json",
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
         },
         body: JSON.stringify({ user_id: "soumya", content: newTask })
       });
@@ -71,7 +71,7 @@ export default function TasksPanel({ isOpen, onClose }: TasksPanelProps) {
       const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/tasks/${taskId}/complete?user_id=soumya`, { 
         method: "POST",
         headers: {
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop'
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
         }
       });
       if (response.ok) {
