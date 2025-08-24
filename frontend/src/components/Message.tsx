@@ -48,6 +48,22 @@ export default function Message({ role, content, formatted, attachments }: Messa
   const isUser = role === "user";
   const normalized = React.useMemo(() => (isUser || formatted ? content : normalizeLLMMarkdown(content)), [content, isUser, formatted]);
 
+  // Minimal attachments-only row (no chat bubble)
+  if ((attachments && attachments.length > 0) && (!content || content.trim().length === 0)) {
+    return (
+      <div className={isUser ? "flex justify-end" : "flex justify-start"}>
+        <div className="mb-1 flex flex-wrap gap-2">
+          {attachments.map((file, i) => (
+            <div key={i} className="inline-flex items-center gap-2 text-sm bg-white/5 border border-white/20 rounded-lg px-3 py-2 backdrop-blur-sm">
+              <FileIcon file={file} />
+              <span className="text-neutral-100 font-medium">{file.name}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={isUser ? "flex justify-end" : "flex justify-start"}>
       <div
@@ -173,29 +189,29 @@ export default function Message({ role, content, formatted, attachments }: Messa
               },
               
               table: ({children}) => (
-                <div className="my-4 overflow-x-auto rounded-xl border border-gray-700/60 bg-gray-900/30 shadow-sm inline-block max-w-full">
-                  <table className="table-auto w-auto max-w-full">
+                <div className="my-4 overflow-x-auto rounded-xl border border-gray-700/60 bg-gray-900/30 shadow-sm ring-1 ring-white/5 inline-block max-w-full">
+                  <table className="w-full border-separate border-spacing-0">
                     {children}
                   </table>
                 </div>
               ),
               
               th: ({children}) => (
-                <th className="border border-gray-700/50 px-3.5 py-2.5 bg-gray-800/60 text-white font-semibold text-left text-sm whitespace-normal break-words align-top">
+                <th className="px-3.5 py-2.5 bg-gray-800/70 supports-[backdrop-filter]:bg-gray-800/50 text-white font-semibold text-left text-sm whitespace-pre-wrap break-words align-top sticky -top-px z-10 border-b border-gray-700/60 first:rounded-tl-xl last:rounded-tr-xl">
                   {children}
                 </th>
               ),
               
               td: ({children}) => (
-                <td className="border border-gray-700/50 px-3.5 py-2.5 text-gray-100 text-sm whitespace-normal break-words align-top">
+                <td className="px-3.5 py-2.5 text-gray-100 text-sm whitespace-pre-wrap break-words align-top border-b border-gray-700/50">
                   {children}
                 </td>
               ),
               tbody: ({children}) => (
-                <tbody className="divide-y divide-gray-700/40">{children}</tbody>
+                <tbody className="[&_tr:hover]:bg-gray-800/20">{children}</tbody>
               ),
               tr: ({children}) => (
-                <tr className="odd:bg-gray-900/30">{children}</tr>
+                <tr className="odd:bg-gray-900/30 transition-colors">{children}</tr>
               ),
               
               hr: () => <hr className="my-6 border-gray-600" />

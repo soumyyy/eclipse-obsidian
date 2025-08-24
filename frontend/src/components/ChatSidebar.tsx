@@ -250,7 +250,7 @@ export default function ChatSidebar({
                     onClose();
                   }}
                 >
-                  <MessageSquare className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                  <MessageSquare className="h-4 w-4 text-gray-500 flex-shrink-0" />
                   
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
@@ -277,7 +277,9 @@ export default function ChatSidebar({
                       e.stopPropagation();
                       deleteSession(session.id);
                     }}
-                    className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 hover:bg-gray-700 text-gray-400 hover:text-red-400 transition-all"
+                    className="h-6 w-6 p-0 opacity-80 group-hover:opacity-100 hover:bg-gray-700 text-gray-400 hover:text-red-400 transition-all"
+                    aria-label="Delete chat"
+                    title="Delete chat"
                   >
                     <Trash2 className="h-3 w-3" />
                   </Button>

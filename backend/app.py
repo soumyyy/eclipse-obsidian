@@ -259,13 +259,20 @@ def _ephemeral_add(session_id: str, texts_with_paths: List[Dict[str, str]]):
     if not texts:
         return
     vecs = embed_fn(texts)  # already L2-normalized float32
-    store = EPHEMERAL_SESSIONS.setdefault(session_id, {"vecs": None, "items": []})
+    store = EPHEMERAL_SESSIONS.setdefault(session_id, {"vecs": None, "items": [], "recent": [], "last_added_at": 0.0})
     old_vecs = store["vecs"]
     if old_vecs is None:
         store["vecs"] = vecs
     else:
         store["vecs"] = np.vstack([old_vecs, vecs])
+    # Track all items
     store["items"] = (store["items"] or []) + texts_with_paths
+    # Track recency for stronger follow-up behavior
+    recent: List[Dict[str, str]] = store.get("recent", [])  # type: ignore
+    recent.extend(texts_with_paths)
+    # Cap recent list
+    store["recent"] = recent[-24:]
+    store["last_added_at"] = time.time()
 
 def _ephemeral_retrieve(session_id: Optional[str], query: str, top_k: int = 5):
     if not session_id or session_id not in EPHEMERAL_SESSIONS:
@@ -292,6 +299,13 @@ def _ephemeral_retrieve(session_id: Optional[str], query: str, top_k: int = 5):
             "id": f"ephemeral::{i}",
         })
     return hits
+
+def _ephemeral_recent(session_id: Optional[str], max_items: int = 3) -> List[Dict[str, str]]:
+    if not session_id or session_id not in EPHEMERAL_SESSIONS:
+        return []
+    store = EPHEMERAL_SESSIONS[session_id]
+    recent: List[Dict[str, str]] = store.get("recent", [])  # type: ignore
+    return list(recent[-max_items:])
 
 # ----------------- Semantic memory retrieval (on-the-fly) -----------------
 def _semantic_memory_retrieve(user_id: str, query: str, limit: int = 5):
@@ -588,19 +602,39 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
                             relevant_items.append(item)
                     
                     if relevant_items:
-                        file_context = "\n\n" + "\n\n".join(
-                            f"Content from {item.get('path', 'upload')}:\n{item.get('text', '')}"
-                            for item in relevant_items
-                        )
+                        # If markdown, preserve code fences; if not, keep as plain
+                        blocks = []
+                        for item in relevant_items:
+                            path = item.get('path', 'upload')
+                            text = item.get('text', '')
+                            is_md = str(path).lower().endswith(('.md', '.markdown'))
+                            if is_md and ("```" in text or re.search(r"^\s{0,3}```", text, flags=re.M)):
+                                blocks.append(f"Content from {path}:\n{text}")
+                            elif is_md:
+                                blocks.append(f"Content from {path}:\n{text}")
+                            else:
+                                blocks.append(f"Content from {path}:\n{text}")
+                        file_context = "\n\n" + "\n\n".join(blocks)
             except Exception:
                 pass
         
-        # Build more natural context
+        # Build more natural context (boost most recent attachments when question follows an upload)
         context_parts = []
         if all_hits:
             context_parts.append("\n\n".join(f"[{i+1}] {h['text']}" for i, h in enumerate(all_hits)))
         if file_context:
             context_parts.append(file_context)
+        # If the last action was a recent upload within past 2 minutes, prepend recent chunks to context
+        try:
+            store = EPHEMERAL_SESSIONS.get(payload.session_id or "") or {}
+            last_added = float(store.get("last_added_at", 0.0))
+            if last_added and (time.time() - last_added) < 120:
+                recent_items = _ephemeral_recent(payload.session_id, max_items=3)
+                if recent_items:
+                    recent_block = "\n\n".join(f"[upload/recent] {it.get('path')}:\n{it.get('text','')[:1200]}" for it in recent_items)
+                    context_parts.insert(0, recent_block)
+        except Exception:
+            pass
         
         context = "\n\n".join(context_parts) if context_parts else ""
     except Exception as e:
@@ -734,6 +768,17 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
           context_parts.append("\n\n".join(f"[{i+1}] {h['text']}" for i, h in enumerate(all_hits)))
         if file_context:
           context_parts.append(file_context)
+        # Boost most recent attachments if the question follows an upload
+        try:
+          store = EPHEMERAL_SESSIONS.get(payload.session_id or "") or {}
+          last_added = float(store.get("last_added_at", 0.0))
+          if last_added and (time.time() - last_added) < 120:
+            recent_items = _ephemeral_recent(payload.session_id, max_items=3)
+            if recent_items:
+              recent_block = "\n\n".join(f"[upload/recent] {it.get('path')}:\n{it.get('text','')[:1200]}" for it in recent_items)
+              context_parts.insert(0, recent_block)
+        except Exception:
+          pass
         
         context = "\n\n".join(context_parts) if context_parts else ""
     except Exception as e:
@@ -840,12 +885,7 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                     background_tasks.add_task(extract_and_store_memories, payload.user_id, payload.message, formatted_md or full, hits)
                 except Exception:
                     pass
-            # Emit sources metadata for the client to attach citations
-            try:
-                meta_sources = [{"path": h.get("path"), "score": h.get("score", 0.0)} for h in (all_hits if 'all_hits' in locals() else hits)]
-                yield f"data: {json.dumps({'type':'meta','sources': meta_sources})}\n\n"
-            except Exception:
-                pass
+            # Sources metadata suppressed per request
             # Emit a final formatted markdown event so the client can replace live text
             try:
                 if formatted_md:
@@ -1172,6 +1212,28 @@ def get_session_history(session_id: str, user_id: str = "soumya", limit: int = 5
         return {"ok": True, "messages": history}
     except Exception as e:
         raise HTTPException(500, f"Failed to get session history: {e}")
+
+# ----------------- Update session title -----------------
+@app.post("/api/sessions/{session_id}/title")
+def update_session_title(session_id: str, user_id: str = "soumya", title: str = ""):
+    """Update session title (e.g., to the first user prompt)."""
+    try:
+        if not title.strip():
+            return {"ok": False, "error": "empty title"}
+        redis_ops = RedisOps()
+        data = redis_ops.get_session_data(session_id)
+        if not data:
+            raise HTTPException(404, "session not found")
+        data["title"] = title.strip()
+        redis_ops.set_session_data(session_id, data, expire=86400)
+        # ensure session is in user's set
+        user_sessions_key = f"{RedisKeys.USER_SESSIONS}{user_id}"
+        redis_ops.client.sadd(user_sessions_key, session_id)
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Failed to update title: {e}")
 
 # ----------------- Redis health check -----------------
 @app.get("/api/redis/health")

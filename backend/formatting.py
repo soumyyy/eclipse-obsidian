@@ -12,7 +12,7 @@ class Section(BaseModel):
 
 
 class JsonAnswer(BaseModel):
-    title: str
+    title: Optional[str] = ""
     sections: List[Section] = []
 
 
@@ -35,7 +35,13 @@ def render_markdown(ans: JsonAnswer, prefer_table: bool = False, prefer_compact:
         lines.append("")
 
     sections = ans.sections or []
-    has_any_table = any(bool(getattr(s, "table", None)) for s in sections)
+    # Count bullets and detect any tables
+    total_bullets = 0
+    has_any_table = False
+    for s in sections:
+        total_bullets += len(getattr(s, "bullets", []) or [])
+        if getattr(s, "table", None):
+            has_any_table = True
     if prefer_table and not has_any_table and sections:
         headers = ["Category", "Details"]
         rows: List[List[str]] = []
@@ -56,7 +62,8 @@ def render_markdown(ans: JsonAnswer, prefer_table: bool = False, prefer_compact:
                 lines.append("| " + " | ".join(r) + " |")
             return "\n".join(lines).strip()
 
-    if prefer_compact and sections:
+    # Polish step: for trivial content, return plain text
+    if (prefer_compact or (not has_any_table and total_bullets <= 2)) and sections:
         sec0 = sections[0]
         bullets = [
             _sanitize_inline(b)
@@ -64,6 +71,9 @@ def render_markdown(ans: JsonAnswer, prefer_table: bool = False, prefer_compact:
             if _sanitize_inline(b) and not re.fullmatch(r"[•\-—|.]+", _sanitize_inline(b))
         ]
         if bullets:
+            # If two bullets, join with space for a single concise sentence
+            if len(bullets) == 2:
+                return (bullets[0] + " " + bullets[1]).strip()
             return bullets[0]
 
     for sec in sections:
@@ -76,8 +86,15 @@ def render_markdown(ans: JsonAnswer, prefer_table: bool = False, prefer_compact:
             if _sanitize_inline(b) and not re.fullmatch(r"[•\-—|.]+", _sanitize_inline(b))
         ]
         if bullets:
-            for b in bullets:
-                lines.append(f"- {b}")
+            # Detect numeric-ordered bullets like "1. Step", "2) Next" and render as an ordered list
+            is_ordered = all(re.match(r"^\s*\d+[\.)]\s+", b) for b in bullets)
+            if is_ordered:
+                for i, b in enumerate(bullets, start=1):
+                    clean = re.sub(r"^\s*\d+[\.)]\s+", "", b).strip()
+                    lines.append(f"{i}. {clean}")
+            else:
+                for b in bullets:
+                    lines.append(f"- {b}")
         table = getattr(sec, "table", None) or {}
         headers = table.get("headers") if isinstance(table, dict) else None
         rows = table.get("rows") if isinstance(table, dict) else None

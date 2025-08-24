@@ -213,11 +213,10 @@ export default function Home() {
     }
     
     const userMsg: ChatMessage = { role: "user", content: input };
-    setMessages((m) => [...m, userMsg]);
     setInput("");
     setLoading(true);
     try {
-      // If there are pending files, upload first and show chips as a message
+      // If there are pending files, upload first and then show chips ABOVE the text message
       if (pendingFiles.length > 0) {
         const form = new FormData();
         form.append('session_id', activeSession || sessionId);
@@ -232,15 +231,29 @@ export default function Home() {
           });
           const d = await r.json();
           if (!r.ok || !d?.ok) throw new Error(d?.error || 'Upload failed');
-          // show attachments as a chat message with chips
+          // first add the attachments chip row, then the user's text
           const atts: FileAttachment[] = pendingFiles.map(f => ({ name: f.name, type: f.type || 'application/octet-stream' }));
-          setMessages((m) => [...m, { role: 'user', content: "", attachments: atts }]);
+          setMessages((m) => [...m, { role: 'user', content: "", attachments: atts }, userMsg]);
         } catch (err: unknown) {
           const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
           console.error(errorMessage);
+          // even if upload fails, still show the text message
+          setMessages((m) => [...m, userMsg]);
         }
         setPendingFiles([]);
+      } else {
+        // No attachments: just add the user's text
+        setMessages((m) => [...m, userMsg]);
       }
+      // If this is the very first message in this session, set the session title to the prompt
+      try {
+        if (messages.length === 0 && currentSessionId) {
+          await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/api/sessions/${currentSessionId}/title?user_id=soumya&title=${encodeURIComponent(userMsg.content.slice(0, 80))}`, {
+            method: 'POST',
+            headers: { 'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_API_KEY || 'qwertyuiop' }
+          });
+        }
+      } catch {}
       // Slash commands to persist memories/tasks explicitly
       let save_fact: string | undefined;
       let make_note: string | undefined;
@@ -417,48 +430,41 @@ export default function Home() {
       // Don't auto-upload, just add to pending files
       setPendingFiles((prev) => [...prev, ...files]);
     };
-    const onPaste = (e: ClipboardEvent) => {
-      e.preventDefault();
-      const items = e.clipboardData?.items;
-      if (!items) return;
+    const onPaste = async (e: ClipboardEvent) => {
+      if (!e.clipboardData) return;
+      const items = e.clipboardData.items;
+      if (!items || items.length === 0) return;
       
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
         if (item.type.startsWith("text/")) {
           item.getAsString((text) => {
-            if (text) {
-              // Check if it's code (multiple lines or long text with code keywords)
-              const isCode = text.includes('\n') || 
-                            (text.length > 100 && /function|class|import|export|const|let|var|if|for|while/.test(text));
-              
-              if (isCode) {
-                // Create a markdown file attachment
-                const blob = new Blob([text], { type: 'text/markdown' });
-                const file = new File([blob], 'pasted-code.md', { type: 'text/markdown' });
-                setPendingFiles(prev => [...prev, file]);
-              } else {
-                // Paste directly into input
-                setInput(prev => prev + text);
-              }
+            if (!text) return;
+            const looksLikeCode = /```[\s\S]*```/.test(text) ||
+                                  (text.includes('\n') && /\b(function|class|import|export|const|let|var|if|for|while|return)\b/.test(text));
+            if (looksLikeCode) {
+              const blob = new Blob([text], { type: 'text/markdown' });
+              const file = new File([blob], 'pasted-code.md', { type: 'text/markdown' });
+              setPendingFiles(prev => [...prev, file]);
+            } else {
+              setInput(prev => (prev ? prev + (prev.endsWith(' ') ? '' : ' ') + text : text));
             }
           });
         } else if (item.type.startsWith("application/") || item.type.startsWith("image/")) {
           const file = item.getAsFile();
-          if (file) {
-            setPendingFiles(prev => [...prev, file]);
-          }
+          if (file) setPendingFiles(prev => [...prev, file]);
         }
       }
     };
     el.addEventListener('dragover', onDragOver as EventListener);
     el.addEventListener('dragleave', onDragLeave as EventListener);
     el.addEventListener('drop', onDrop as unknown as EventListener);
-    el.addEventListener('paste', onPaste as EventListener);
+    el.addEventListener('paste', onPaste as unknown as EventListener);
     return () => {
       el.removeEventListener('dragover', onDragOver as EventListener);
       el.removeEventListener('dragleave', onDragLeave as EventListener);
       el.removeEventListener('drop', onDrop as unknown as EventListener);
-      el.removeEventListener('paste', onPaste as EventListener);
+      el.removeEventListener('paste', onPaste as unknown as EventListener);
     };
   }, [sessionId]);
 
@@ -473,10 +479,11 @@ export default function Home() {
               <div className="flex items-center gap-6">
                 <button
                   onClick={() => setChatSidebarOpen(true)}
-                  className="p-2 rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white transition-colors border border-gray-600"
-                  title="Open chat sessions (Cmd+K)"
+                  className="p-2 rounded-full text-gray-400 hover:text-white hover:bg-gray-700 transition-colors border border-gray-600"
+                  title="Open chats"
+                  aria-label="Open chats"
                 >
-                  <Menu className="w-5 h-5" />
+                  <MessageSquare className="w-5 h-5" />
                 </button>
                 
                 <div className="flex items-center gap-4">
