@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { X, Plus, Check } from "lucide-react";
+import { getBackendUrl } from "@/utils/config";
 
 interface Task {
   id: number;
@@ -31,7 +32,7 @@ export default function TasksPanel({ isOpen, onClose }: TasksPanelProps) {
   const loadTasks = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/tasks?user_id=soumya&status=open&limit=200`, { 
+      const response = await fetch(`${getBackendUrl()}/tasks?user_id=soumya&status=open&limit=200`, { 
         cache: "no-store",
         headers: {
           'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
@@ -49,7 +50,7 @@ export default function TasksPanel({ isOpen, onClose }: TasksPanelProps) {
   const addTask = async () => {
     if (!newTask.trim()) return;
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/tasks`, {
+      const response = await fetch(`${getBackendUrl()}/tasks`, {
         method: "POST",
         headers: { 
           "Content-Type": "application/json",
@@ -68,7 +69,7 @@ export default function TasksPanel({ isOpen, onClose }: TasksPanelProps) {
 
   const completeTask = async (taskId: number) => {
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/tasks/${taskId}/complete?user_id=soumya`, { 
+      const response = await fetch(`${getBackendUrl()}/tasks/${taskId}/complete?user_id=soumya`, { 
         method: "POST",
         headers: {
           'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''

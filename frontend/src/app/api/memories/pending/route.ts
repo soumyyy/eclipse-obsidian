@@ -1,25 +1,18 @@
-import { NextRequest, NextResponse } from "next/server";
+import { getBackendUrl } from "@/utils/config";
 
-export async function GET(req: NextRequest) {
+export async function GET(req: Request) {
+  const backendUrl = getBackendUrl();
+  const token = process.env.BACKEND_API_KEY;
+  const { searchParams } = new URL(req.url);
+  
   try {
-    const backendUrl = process.env.BACKEND_URL || "http://127.0.0.1:8000";
-    const token = process.env.BACKEND_API_KEY;
-    const { searchParams } = new URL(req.url);
-    const user_id = searchParams.get("user_id");
-    const limit = searchParams.get("limit") || "50";
-    const url = `${backendUrl}/memories/pending?user_id=${encodeURIComponent(user_id || "")}&limit=${encodeURIComponent(limit)}`;
-    const resp = await fetch(url, {
-      method: "GET",
-      headers: {
-        ...(token ? { "x-api-key": token } : {}),
-      },
-      cache: "no-store",
+    const response = await fetch(`${backendUrl}/memories/pending?${searchParams.toString()}`, {
+      headers: { ...(token ? { "x-api-key": token } : {}) }
     });
-    const data = await resp.json();
-    return NextResponse.json(data, { status: resp.status });
-  } catch (err: unknown) {
-    const errorMessage = err instanceof Error ? err.message : "Unexpected error";
-    return NextResponse.json({ ok: false, error: errorMessage }, { status: 500 });
+    const data = await response.json();
+    return Response.json(data);
+  } catch (error) {
+    return Response.json({ error: "Failed to connect to backend" }, { status: 500 });
   }
 }
 

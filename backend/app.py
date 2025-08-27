@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 # --------------------------------------
 
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 import re, time
 from datetime import datetime
 
@@ -25,11 +25,52 @@ from memory import ensure_db, recall_memories, add_memory, add_task, list_tasks,
 from memory_extractor import extract_and_store_memories, run_memory_maintenance
 from redis_config import RedisOps, RedisKeys
 from llm_cerebras import cerebras_chat   # Cerebras chat wrapper
+from llm_cerebras import cerebras_chat_stream  # Cerebras streaming chat
 from memory_extractor import extract_and_store_memories
 from cot_utils import should_apply_cot, build_cot_hint, inject_cot_hint
 from formatting import JsonAnswer, Section, ensure_json_and_markdown, render_markdown, fallback_sanitize
 from bs4 import BeautifulSoup
 import requests
+
+# Add response caching for better performance
+RESPONSE_CACHE: Dict[str, Dict[str, Any]] = {}
+CACHE_TTL = 300  # 5 minutes
+
+def _get_cached_response(query: str, context_hash: str) -> Optional[str]:
+    """Get cached response if available and not expired"""
+    cache_key = f"{query}:{context_hash}"
+    if cache_key in RESPONSE_CACHE:
+        cached = RESPONSE_CACHE[cache_key]
+        if time.time() - cached["timestamp"] < CACHE_TTL:
+            return cached["response"]
+        else:
+            del RESPONSE_CACHE[cache_key]
+    return None
+
+def _cache_response(query: str, context_hash: str, response: str):
+    """Cache response for future use"""
+    cache_key = f"{query}:{context_hash}"
+    RESPONSE_CACHE[cache_key] = {
+        "response": response,
+        "timestamp": time.time()
+    }
+    
+    # Clean up old cache entries
+    current_time = time.time()
+    expired_keys = [k for k, v in RESPONSE_CACHE.items() if current_time - v["timestamp"] > CACHE_TTL]
+    for k in expired_keys:
+        del RESPONSE_CACHE[k]
+
+def _clear_ephemeral_context(session_id: str):
+    """Clear ephemeral context for a session to prevent context bleeding"""
+    if session_id in EPHEMERAL_SESSIONS:
+        del EPHEMERAL_SESSIONS[session_id]
+        print(f"Cleared ephemeral context for session: {session_id}")
+
+def _get_context_hash(hits: List[Dict], file_context: str) -> str:
+    """Generate a hash of context for caching purposes"""
+    context_text = "".join([str(hit.get("content", "")) for hit in hits]) + file_context
+    return str(hash(context_text))[:16]  # Simple hash for now
 
 # ----------------- Config -----------------
 ASSISTANT      = os.getenv("ASSISTANT_NAME", "Eclipse")
@@ -47,7 +88,13 @@ DOCS_PKL       = str(BASE_DIR / "data" / "docs.pkl")
 app = FastAPI(title="Obsidian RAG + Cerebras Assistant")
 
 # CORS
-cors_origins = {FRONTEND_ORIG, "http://localhost:3000", "http://127.0.0.1:3000"}
+cors_origins = {
+    FRONTEND_ORIG, 
+    "http://localhost:3000", 
+    "http://127.0.0.1:3000",
+    "http://192.168.29.112:3000",  # Your mobile device
+    "http://0.0.0.0:3000"
+}
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o for o in cors_origins if o],
@@ -834,58 +881,45 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
         # Build more natural context
         context_parts = []
         if all_hits:
-          context_parts.append("\n\n".join(f"[{i+1}] {h['text']}" for i, h in enumerate(all_hits)))
+          context_parts.append("Relevant information:\n" + "\n\n".join(f"From {hit.get('path', 'memory')}:\n{hit.get('content', '')}" for hit in all_hits))
         if file_context:
           context_parts.append(file_context)
-        # Boost most recent attachments if the question follows an upload
-        try:
-          store = EPHEMERAL_SESSIONS.get(payload.session_id or "") or {}
-          last_added = float(store.get("last_added_at", 0.0))
-          if last_added and (time.time() - last_added) < 120:
-            recent_items = _ephemeral_recent(payload.session_id, max_items=3)
-            if recent_items:
-              recent_block = "\n\n".join(f"[upload/recent] {it.get('path')}:\n{it.get('text','')[:1200]}" for it in recent_items)
-              context_parts.insert(0, recent_block)
-        except Exception:
-          pass
         
         context = "\n\n".join(context_parts) if context_parts else ""
+        
+        # Check cache for similar queries
+        context_hash = _get_context_hash(all_hits, file_context)
+        cached_response = _get_cached_response(payload.message, context_hash)
+        
+        if cached_response:
+            # Return cached response immediately for better performance
+            def event_gen():
+                yield f"data: {cached_response}\n\n"
+                yield f"data: {{\"type\":\"final_md\",\"content\":\"{cached_response}\"}}\n\n"
+                yield "data: [DONE]\n\n"
+            
+            return StreamingResponse(event_gen(), media_type="text/plain")
+        
+        # Prepare messages for LLM
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": f"Context:\n{context}\n\nUser message: {payload.message}"}
+        ]
+        
+        # Add recent chat history for context continuity (only for current session)
+        if payload.session_id:
+            try:
+                redis_ops = RedisOps()
+                recent_history = redis_ops.get_chat_history(payload.user_id, payload.session_id, limit=4)
+                if recent_history:
+                    # Add last 2 exchanges (4 messages) for context
+                    for msg in recent_history[-4:]:
+                        messages.insert(-1, {"role": msg["role"], "content": msg["content"]})
+            except Exception as e:
+                print(f"Error loading chat history: {e}")
+
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Retriever not ready: {e}. Run `python ingest.py`.") from e
-
-    mems = recall_memories(payload.user_id, limit=6)
-    
-    # Get recent conversation history for better context
-    recent_history = _get_history(payload.user_id)
-    conversation_context = ""
-    if recent_history and len(recent_history) > 2:
-        # Include last few exchanges for context
-        recent_exchanges = recent_history[-4:]  # Last 2 exchanges (4 messages)
-        conversation_context = "\n\nRecent conversation:\n" + "\n".join(f"{'You' if msg['role'] == 'user' else 'Assistant'}: {msg['content'][:200]}" for msg in recent_exchanges)
-    
-    memories_text = "\n".join(str(m) for m in (mems or []))
-    if conversation_context:
-        memories_text = memories_text + conversation_context
-    
-    uploads_info = None
-    if payload.session_id and payload.session_id in EPHEMERAL_SESSIONS:
-        try:
-            items = EPHEMERAL_SESSIONS[payload.session_id].get("items") or []
-            files = []
-            for it in items:
-                p = it.get("path", "(upload)")
-                fname = str(p).split("::", 1)[0]
-                if fname not in files:
-                    files.append(fname)
-            uploads_info = f"count={len(files)} files: {', '.join(files[:6])}"
-        except Exception:
-            uploads_info = "present"
-    
-    messages = build_messages(payload.user_id, payload.message, context, memories_text, uploads_info)
-    if should_apply_cot(payload.message):
-        messages = inject_cot_hint(messages, build_cot_hint())
-
-    from llm_cerebras import cerebras_chat_stream
+        raise HTTPException(status_code=400, detail=f"Error preparing chat: {e}")
 
     def event_gen():
         buffer = []
@@ -930,37 +964,14 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                     }
                     redis_ops.store_chat_message(payload.user_id, payload.session_id, assistant_message)
                     
-                    # Update session with last message info
-                    try:
-                        session_data = redis_ops.get_session_data(payload.session_id)
-                        if session_data:
-                            session_data["last_message"] = payload.message[:100] + "..." if len(payload.message) > 100 else payload.message
-                            session_data["message_count"] = session_data.get("message_count", 0) + 2
-                            redis_ops.set_session_data(payload.session_id, session_data, expire=86400)
-                    except Exception as e:
-                        print(f"Error updating session data: {e}")
-                        
+                    # Cache the response for future similar queries
+                    _cache_response(payload.message, context_hash, formatted_md or full)
+                    
                 except Exception as e:
                     print(f"Error storing messages in Redis: {e}")
-            else:
-                # Format to JSON-first → markdown and store formatted in history
-                prefer_table = bool(re.search(r"\b(table|tabulate|comparison|vs)\b", payload.message, flags=re.I))
-                prefer_compact = bool(re.fullmatch(r"\s*(hi|hello|hey|yo|hola)[.!?]?\s*", (payload.message or ""), flags=re.I))
-                ans, formatted_md = _ensure_json_and_markdown(full, prefer_table=prefer_table, prefer_compact=prefer_compact)
-                _append_history(payload.user_id, "assistant", formatted_md or full)
-            # Avoid storing memories when ephemeral uploads influenced this reply
-            if os.getenv("AUTO_MEMORY", "false").lower() in ("1","true","yes") and not (locals().get("eph_hits")):
-                try:
-                    background_tasks.add_task(extract_and_store_memories, payload.user_id, payload.message, formatted_md or full, hits)
-                except Exception:
-                    pass
-            # Sources metadata suppressed per request
-            # Emit a final formatted markdown event so the client can replace live text
-            try:
-                if formatted_md:
-                    yield f"data: {json.dumps({'type':'final_md','content': formatted_md})}\n\n"
-            except Exception:
-                pass
+            
+            # Emit final formatted markdown
+            yield f"data: {{\"type\":\"final_md\",\"content\":\"{formatted_md or full}\"}}\n\n"
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(
@@ -1303,11 +1314,18 @@ def get_sessions(user_id: str = "soumya"):
         raise HTTPException(500, f"Failed to get sessions: {e}")
 
 @app.post("/api/sessions")
-def create_session(user_id: str = "soumya", title: str = "New Chat"):
+def create_session(user_id: str = "soumya", title: str = "New Chat", session_id: Optional[str] = None):
     """Create a new chat session"""
     try:
         redis_ops = RedisOps()
-        session_id = f"session_{int(time.time())}"
+        
+        # Use provided session_id or generate one
+        if not session_id:
+            session_id = f"session_{int(time.time())}"
+        
+        # Clear any existing ephemeral context for this session
+        _clear_ephemeral_context(session_id)
+        
         session_data = {
             "id": session_id,
             "title": title,

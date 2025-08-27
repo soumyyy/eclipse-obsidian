@@ -1,28 +1,22 @@
-import { NextResponse } from "next/server";
+import { getBackendUrl } from "@/utils/config";
 
 export async function POST(req: Request) {
+  const backendUrl = getBackendUrl();
+  const token = process.env.BACKEND_API_KEY;
+  
   try {
-    const backendUrl = process.env.BACKEND_URL || "http://127.0.0.1:8000";
-    const token = process.env.BACKEND_API_KEY;
-    const payload = await req.json();
-
-    const resp = await fetch(`${backendUrl}/chat`, {
+    const response = await fetch(`${backendUrl}/chat`, {
       method: "POST",
-      headers: {
+      headers: { 
         "Content-Type": "application/json",
-        ...(token ? { "x-api-key": token } : {}),
+        ...(token ? { "x-api-key": token } : {})
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(await req.json())
     });
-
-    const data = await resp.json();
-    if (!resp.ok) {
-      return NextResponse.json({ error: data?.detail || "Upstream error" }, { status: resp.status });
-    }
-    return NextResponse.json(data);
-  } catch (err: unknown) {
-    const errorMessage = err instanceof Error ? err.message : "Unexpected error";
-    return NextResponse.json({ error: errorMessage }, { status: 500 });
+    const data = await response.json();
+    return Response.json(data);
+  } catch (error) {
+    return Response.json({ error: "Failed to connect to backend" }, { status: 500 });
   }
 }
 

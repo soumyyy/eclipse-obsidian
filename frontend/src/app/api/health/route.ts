@@ -1,16 +1,14 @@
-import { NextResponse } from "next/server";
+import { getBackendUrl } from "@/utils/config";
 
 export async function GET() {
+  const backendUrl = getBackendUrl();
+  
   try {
-    const backendUrl = process.env.BACKEND_URL || "http://127.0.0.1:8000";
-    const token = process.env.BACKEND_API_KEY;
-    const resp = await fetch(`${backendUrl}/health`, { cache: "no-store", headers: { ...(token ? { "x-api-key": token } : {}) } });
-    const data = await resp.json();
-    if (!resp.ok) return NextResponse.json({ ok: false, error: data?.detail || "Upstream error" }, { status: resp.status });
-    return NextResponse.json({ ok: true, data });
-  } catch (err: unknown) {
-    const errorMessage = err instanceof Error ? err.message : "Unexpected error";
-    return NextResponse.json({ ok: false, error: errorMessage }, { status: 500 });
+    const response = await fetch(`${backendUrl}/health`);
+    const data = await response.json();
+    return Response.json(data);
+  } catch (error) {
+    return Response.json({ error: "Failed to connect to backend" }, { status: 500 });
   }
 }
 

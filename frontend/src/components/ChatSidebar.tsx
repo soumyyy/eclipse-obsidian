@@ -9,6 +9,7 @@ import {
   ChevronRight
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { getBackendUrl } from "@/utils/config";
 
 interface ChatSession {
   id: string;
@@ -39,12 +40,17 @@ export default function ChatSidebar({
   useEffect(() => {
     if (isOpen) {
       fetchSessions();
+      
+      // Auto-refresh sessions every 30 seconds for multi-device sync
+      const interval = setInterval(fetchSessions, 30000);
+      
+      return () => clearInterval(interval);
     }
   }, [isOpen]);
 
       const fetchSessions = async () => {
       try {
-        const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/api/sessions?user_id=soumya`, {
+        const response = await fetch(`${getBackendUrl()}/api/sessions?user_id=soumya`, {
           headers: {
             'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
           }
@@ -62,7 +68,7 @@ export default function ChatSidebar({
     if (!newSessionTitle.trim()) return;
     
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/api/sessions`, {
+      const response = await fetch(`${getBackendUrl()}/api/sessions`, {
         method: "POST",
         headers: {
           'Content-Type': 'application/json',
@@ -91,7 +97,7 @@ export default function ChatSidebar({
     if (!confirm("Are you sure you want to delete this chat?")) return;
     
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/api/sessions/${sessionId}`, {
+      const response = await fetch(`${getBackendUrl()}/api/sessions/${sessionId}`, {
         method: "DELETE",
         headers: {
           'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
@@ -115,7 +121,7 @@ export default function ChatSidebar({
 
   const createDefaultSession = async (): Promise<ChatSession | null> => {
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/api/sessions`, {
+      const response = await fetch(`${getBackendUrl()}/api/sessions`, {
         method: "POST",
         headers: {
           'Content-Type': 'application/json',

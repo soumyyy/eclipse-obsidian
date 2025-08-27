@@ -2,6 +2,7 @@
 import { useState, useRef, useEffect } from "react";
 import Message from "@/components/Message";
 import Sound from "@/components/Sound";
+import { getBackendUrl } from "@/utils/config";
 
 import HUD from "@/components/HUD";
 import TasksPanel from "@/components/TasksPanel";
@@ -40,24 +41,42 @@ function FileIcon({ file }: { file: File }) {
 
 export default function Home() {
   const STORAGE_KEY = "eclipse_chat_messages";
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  
+  // Generate deterministic session ID based on time (same across all devices)
   const [sessionId] = useState<string>(() => {
     try {
+      // Check if we have an existing session ID
       const existing = (typeof window !== 'undefined' && localStorage.getItem('eclipse_session_id')) || '';
       if (existing) return existing;
-      const sid = (typeof crypto !== 'undefined' && 'randomUUID' in crypto) ? crypto.randomUUID() : Math.random().toString(36).slice(2);
-      if (typeof window !== 'undefined') localStorage.setItem('eclipse_session_id', sid);
-      return sid;
+      
+      // Generate time-based session ID (same across all devices)
+      const now = new Date();
+      const dateStr = now.toISOString().split('T')[0]; // YYYY-MM-DD
+      const hour = now.getHours();
+      let timeSlot = 'morning';
+      if (hour >= 12 && hour < 17) timeSlot = 'afternoon';
+      else if (hour >= 17) timeSlot = 'evening';
+      
+      const deterministicId = `session_${dateStr}_${timeSlot}`;
+      
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('eclipse_session_id', deterministicId);
+      }
+      return deterministicId;
     } catch {
-      return Math.random().toString(36).slice(2);
+      // Fallback to time-based ID
+      const now = new Date();
+      const dateStr = now.toISOString().split('T')[0];
+      return `session_${dateStr}_fallback`;
     }
   });
+  
   const listRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
-
-
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [recording, setRecording] = useState(false);
@@ -74,25 +93,58 @@ export default function Home() {
 
   const [healthy, setHealthy] = useState<boolean | null>(null);
 
+  // Auto-refresh sessions every 30 seconds for multi-device sync
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (chatSidebarOpen) {
+        // Refresh sessions list to get updates from other devices
+        // This will be handled in ChatSidebar component
+      }
+    }, 30000); // 30 seconds
+
+    return () => clearInterval(interval);
+  }, [chatSidebarOpen]);
+
   const createNewChatSession = async () => {
     try {
       setCreatingSession(true);
-              const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/api/sessions`, {
-          method: "POST",
-          headers: {
-            'Content-Type': 'application/json',
-            'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
-          },
+      
+      // Clear all current context to prevent bleeding
+      setMessages([]);
+      setPendingFiles([]);
+      
+      // Generate new time-based session ID
+      const now = new Date();
+      const dateStr = now.toISOString().split('T')[0];
+      const hour = now.getHours();
+      let timeSlot = 'morning';
+      if (hour >= 12 && hour < 17) timeSlot = 'afternoon';
+      else if (hour >= 17) timeSlot = 'evening';
+      
+      const newSessionId = `session_${dateStr}_${timeSlot}_${Date.now()}`;
+      
+      const response = await fetch(`${getBackendUrl()}/api/sessions`, {
+        method: "POST",
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
+        },
         body: JSON.stringify({
           user_id: "soumya",
-          title: "New Chat"
+          title: "New Chat",
+          session_id: newSessionId
         })
       });
       
       if (response.ok) {
         const data = await response.json();
-        setActiveSession(data.session.id);
-        setMessages([]);
+        setActiveSession(newSessionId);
+        
+        // Store new session ID in localStorage for persistence
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('eclipse_session_id', newSessionId);
+        }
+        
         inputRef.current?.focus();
       }
     } catch (error) {
@@ -103,16 +155,19 @@ export default function Home() {
   };
 
   const handleSessionSelect = async (sessionId: string) => {
-    setActiveSession(sessionId);
+    // Clear current session context to prevent bleeding
     setMessages([]);
+    setPendingFiles([]);
+    
+    setActiveSession(sessionId);
     
     // Load session history from Redis
     try {
-              const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/api/sessions/${sessionId}/history?user_id=soumya`, {
-          headers: {
-            'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
-          }
-      });
+      const response = await fetch(`${getBackendUrl()}/api/sessions/${sessionId}/history?user_id=soumya`, {
+        headers: {
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
+        }
+    });
       
       if (response.ok) {
         const data = await response.json();
@@ -179,178 +234,153 @@ export default function Home() {
     return () => window.removeEventListener('keydown', onKey);
   }, [recording, showTasks]);
 
-  async function sendMessage(e?: React.FormEvent) {
-    if (e) e.preventDefault();
-    if (!input.trim() || loading) return;
+  const sendMessage = async () => {
+    if (!input.trim() && pendingFiles.length === 0) return;
     
-    // Create a new session if none exists
-    let currentSessionId = activeSession;
-    if (!currentSessionId) {
+    // Ensure we have an active session
+    if (!activeSession) {
+      await createNewChatSession();
+      return;
+    }
+    
+    const userMessage = input.trim();
+    const userMessageObj: ChatMessage = {
+      role: "user",
+      content: userMessage,
+      sources: [],
+      formatted: true
+    };
+    
+    // Add user message immediately
+    setMessages(prev => [...prev, userMessageObj]);
+    setInput("");
+    
+    // Upload files first if any
+    let fileContext = "";
+    if (pendingFiles.length > 0) {
       try {
-        setCreatingSession(true);
-        const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/api/sessions`, {
-          method: "POST",
+        const formData = new FormData();
+        pendingFiles.forEach(file => formData.append('files', file));
+        formData.append('session_id', activeSession);
+        
+        const uploadResponse = await fetch(`${getBackendUrl()}/api/upload`, {
+          method: 'POST',
           headers: {
-            'Content-Type': 'application/json',
             'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
           },
-          body: JSON.stringify({
-            user_id: "soumya",
-            title: input.substring(0, 50) + (input.length > 50 ? "..." : "")
-          })
+          body: formData
         });
         
-        if (response.ok) {
-          const data = await response.json();
-          currentSessionId = data.session.id;
-          setActiveSession(currentSessionId);
+        if (uploadResponse.ok) {
+          // Show files as a separate message
+          const filesMessage: ChatMessage = {
+            role: "user",
+            content: `📎 Attached ${pendingFiles.length} file(s): ${pendingFiles.map(f => f.name).join(', ')}`,
+            sources: [],
+            formatted: true
+          };
+          setMessages(prev => [...prev, filesMessage]);
         }
+        
+        setPendingFiles([]);
       } catch (error) {
-        console.error("Error creating session:", error);
-      } finally {
-        setCreatingSession(false);
+        console.error("Error uploading files:", error);
       }
     }
     
-    const userMsg: ChatMessage = { role: "user", content: input };
-    setInput("");
+    // Start loading state
     setLoading(true);
+    
     try {
-      // If there are pending files, upload first and then show chips ABOVE the text message
-      if (pendingFiles.length > 0) {
-        const form = new FormData();
-        form.append('session_id', activeSession || sessionId);
-        for (const f of pendingFiles) form.append('files', f);
-        try {
-          const r = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/upload`, { 
-            method: 'POST', 
-            body: form,
-            headers: {
-              'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
-            }
-          });
-          const d = await r.json();
-          if (!r.ok || !d?.ok) throw new Error(d?.error || 'Upload failed');
-          // first add the attachments chip row, then the user's text
-          const atts: FileAttachment[] = pendingFiles.map(f => ({ name: f.name, type: f.type || 'application/octet-stream' }));
-          setMessages((m) => [...m, { role: 'user', content: "", attachments: atts }, userMsg]);
-        } catch (err: unknown) {
-          const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-          console.error(errorMessage);
-          // even if upload fails, still show the text message
-          setMessages((m) => [...m, userMsg]);
-        }
-        setPendingFiles([]);
-      } else {
-        // No attachments: just add the user's text
-        setMessages((m) => [...m, userMsg]);
-      }
-      // If this is the very first message in this session, set the session title to the prompt
-      try {
-        if (messages.length === 0 && currentSessionId) {
-          await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/api/sessions/${currentSessionId}/title?user_id=soumya&title=${encodeURIComponent(userMsg.content.slice(0, 80))}`, {
-            method: 'POST',
-                          headers: { 'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || '' }
-          });
-        }
-      } catch {}
-      // Slash commands to persist memories/tasks explicitly
-      let save_fact: string | undefined;
-      let make_note: string | undefined;
-      let save_task: string | undefined;
-      const trimmed = userMsg.content.trim();
-      if (/^\/(remember)\s+/i.test(trimmed)) {
-        save_fact = trimmed.replace(/^\/(remember)\s+/i, "");
-      } else if (/^\/(note)\s+/i.test(trimmed)) {
-        make_note = trimmed.replace(/^\/(note)\s+/i, "");
-      } else if (/^\/(task)\s+/i.test(trimmed)) {
-        save_task = trimmed.replace(/^\/(task)\s+/i, "");
-      }
-
-
-      const resp = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/chat/stream`, {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
+      const response = await fetch(`${getBackendUrl()}/chat/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
           'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
         },
-        body: JSON.stringify({ user_id: "soumya", message: userMsg.content, save_fact, make_note, save_task, session_id: currentSessionId }),
+        body: JSON.stringify({
+          user_id: "soumya",
+          message: userMessage,
+          session_id: activeSession
+        })
       });
-      if (!resp.ok || !resp.body) {
-        const data = await resp.json().catch(() => ({}));
-        throw new Error((data as { error?: string })?.error || "Server error");
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
-      // Insert a live assistant placeholder for streaming updates
-      setMessages((m) => [...m, { role: "assistant", content: "", formatted: false }]);
-      const reader = resp.body.getReader();
+      
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error("No response body");
+      }
+      
+      let assistantMessage: ChatMessage = {
+        role: "assistant",
+        content: "",
+        sources: [],
+        formatted: false
+      };
+      
+      setMessages(prev => [...prev, assistantMessage]);
+      
       const decoder = new TextDecoder();
-      let acc = "";
-      let assistantContent = "";
-      let finalSources: { path: string; score: number }[] | undefined;
-      let finalMd: string | undefined;
-      for (;;) {
-        const { value, done } = await reader.read();
+      let buffer = "";
+      
+      while (true) {
+        const { done, value } = await reader.read();
         if (done) break;
-        acc += decoder.decode(value, { stream: true });
-        const parts = acc.split("\n\n");
-        acc = parts.pop() || "";
-        for (const p of parts) {
-          if (!p.startsWith("data: ")) continue;
-          const chunk = p.slice(6);
-          if (chunk === "[DONE]") {
-            continue;
-          }
-          if (chunk.startsWith("{")) {
+        
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') {
+              // Mark message as formatted
+              setMessages(prev => prev.map((msg, idx) => 
+                idx === prev.length - 1 ? { ...msg, formatted: true } : msg
+              ));
+              break;
+            }
+            
             try {
-              const meta = JSON.parse(chunk);
-              if (meta?.type === 'meta' && Array.isArray(meta?.sources)) {
-                finalSources = meta.sources as { path: string; score: number }[];
-                continue;
+              const parsed = JSON.parse(data);
+              if (parsed.type === 'final_md') {
+                // Replace the streaming content with final formatted content
+                setMessages(prev => prev.map((msg, idx) => 
+                  idx === prev.length - 1 ? { ...msg, content: parsed.content, formatted: true } : msg
+                ));
+                break;
               }
-              if (meta?.type === 'final_md' && typeof meta?.content === 'string') {
-                finalMd = meta.content as string;
-                // Immediately replace last assistant message with final content
-                setMessages((m) => {
-                  const out = [...m];
-                  if (out[out.length - 1]?.role === 'assistant') out[out.length - 1] = { role: 'assistant', content: finalMd, formatted: true } as ChatMessage;
-                  return out;
-                });
-                continue;
+            } catch {
+              // Regular streaming content
+              if (data.trim()) {
+                setMessages(prev => prev.map((msg, idx) => 
+                  idx === prev.length - 1 ? { ...msg, content: msg.content + data } : msg
+                ));
               }
-            } catch {}
+            }
           }
-          assistantContent += chunk;
-          // live token rendering
-          setMessages((m) => {
-            const out = [...m];
-            if (out[out.length - 1]?.role === "assistant") out[out.length - 1] = { role: "assistant", content: assistantContent, formatted: false } as ChatMessage;
-            return out;
-          });
         }
       }
-      // attach sources and final formatted markdown once stream ends
-      if (finalSources) {
-        setMessages((m) => {
-          const out = [...m];
-          const last = out[out.length - 1];
-          if (last?.role === 'assistant') out[out.length - 1] = { ...(last as ChatMessage), sources: finalSources };
-          return out;
-        });
-      }
-      if (finalMd) {
-        setMessages((m) => {
-          const out = [...m];
-          if (out[out.length - 1]?.role === 'assistant') out[out.length - 1] = { role: 'assistant', content: finalMd, formatted: true } as ChatMessage;
-          return out;
-        });
-      }
-    } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-      setMessages((m) => [...m, { role: "assistant", content: `Error: ${errorMessage}` }]);
+      
+      reader.releaseLock();
+    } catch (error) {
+      console.error("Error sending message:", error);
+      // Show error message
+      const errorMessage: ChatMessage = {
+        role: "assistant",
+        content: "Sorry, I encountered an error. Please try again.",
+        sources: [],
+        formatted: true
+      };
+      setMessages(prev => [...prev, errorMessage]);
     } finally {
       setLoading(false);
     }
-  }
+  };
 
   async function startRecording() {
     try {
@@ -488,7 +518,7 @@ export default function Home() {
                 <button
                   onClick={async () => {
                     try {
-                      const r = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/admin/reindex`, { 
+                      const r = await fetch(`${getBackendUrl()}/admin/reindex`, { 
                         method: "POST",
                         headers: {
                           'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
@@ -509,7 +539,7 @@ export default function Home() {
                 <button
                   onClick={async () => {
                     try {
-                      const r = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/health`, { cache: "no-store" });
+                      const r = await fetch(`${getBackendUrl()}/health`, { cache: "no-store" });
                       const d = await r.json();
                       setHealthy(d.status === "ok");
                       if (d.status !== "ok") alert(`Backend issue: ${d.error || "unknown"}`);
@@ -543,7 +573,7 @@ export default function Home() {
 
         {/* Floating input bar */}
         <div className="fixed bottom-4 inset-x-0 px-3 pointer-events-none">
-          <form onSubmit={sendMessage} className="max-w-5xl mx-auto pointer-events-auto">
+          <form onSubmit={(e) => { e.preventDefault(); sendMessage(); }} className="max-w-5xl mx-auto pointer-events-auto">
             <div className="relative rounded-2xl border border-gray-600 bg-black/80 backdrop-blur-xl shadow-2xl flex items-center gap-2 px-3 py-2">
               {loading && <div className="loading-underline" />}
               <button

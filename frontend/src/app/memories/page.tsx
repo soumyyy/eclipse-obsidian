@@ -11,6 +11,7 @@ import {
   X, 
   RefreshCw
 } from "lucide-react";
+import { getBackendUrl } from "@/utils/config";
 
 interface Memory {
   id: number;
@@ -41,7 +42,7 @@ export default function MemoriesPage() {
 
   const fetchMemories = async () => {
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/memories?user_id=soumya`, {
+      const response = await fetch(`${getBackendUrl()}/memories?user_id=soumya`, {
         headers: {
           'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
         }
@@ -58,7 +59,7 @@ export default function MemoriesPage() {
   const runMemoryMaintenance = async () => {
     setIsMaintenanceRunning(true);
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/admin/memory/maintenance`, { 
+      const response = await fetch(`${getBackendUrl()}/admin/memory/maintenance`, { 
         method: "POST",
         headers: {
           'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
@@ -81,7 +82,7 @@ export default function MemoriesPage() {
 
   const deleteMemory = async (memoryId: number) => {
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/memories/${memoryId}`, {
+      const response = await fetch(`${getBackendUrl()}/memories/${memoryId}`, {
         method: "DELETE",
         headers: {
           'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
@@ -104,7 +105,7 @@ export default function MemoriesPage() {
 
   const saveMemory = async (memoryId: number, newContent: string) => {
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000'}/memories/${memoryId}`, {
+      const response = await fetch(`${getBackendUrl()}/memories/${memoryId}`, {
         method: "POST",
         headers: {
           'Content-Type': 'application/json',

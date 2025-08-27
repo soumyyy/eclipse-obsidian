@@ -1,14 +1,23 @@
+import { getBackendUrl } from "@/utils/config";
+
 export async function POST(req: Request) {
-  const backendUrl = process.env.BACKEND_URL || "http://127.0.0.1:8000";
+  const backendUrl = getBackendUrl();
   const token = process.env.BACKEND_API_KEY;
-  const body = await req.json();
-  const upstream = await fetch(`${backendUrl}/summarize_url`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...(token ? { "x-api-key": token } : {}) },
-    body: JSON.stringify(body),
-  });
-  const data = await upstream.json();
-  return new Response(JSON.stringify(data), { status: upstream.status });
+  
+  try {
+    const response = await fetch(`${backendUrl}/summarize-url`, {
+      method: "POST",
+      headers: { 
+        "Content-Type": "application/json",
+        ...(token ? { "x-api-key": token } : {})
+      },
+      body: JSON.stringify(await req.json())
+    });
+    const data = await response.json();
+    return Response.json(data);
+  } catch (error) {
+    return Response.json({ error: "Failed to connect to backend" }, { status: 500 });
+  }
 }
 
 

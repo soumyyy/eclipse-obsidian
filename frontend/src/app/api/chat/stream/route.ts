@@ -1,27 +1,26 @@
+import { getBackendUrl } from "@/utils/config";
+
 export async function POST(req: Request) {
-  const backendUrl = process.env.BACKEND_URL || "http://127.0.0.1:8000";
+  const backendUrl = getBackendUrl();
   const token = process.env.BACKEND_API_KEY;
-  const payload = await req.json();
-  const upstream = await fetch(`${backendUrl}/chat/stream`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { "x-api-key": token } : {}),
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!upstream.ok || !upstream.body) {
-    const errText = await upstream.text().catch(() => "Upstream error");
-    return new Response(errText, { status: upstream.status || 500 });
+  
+  try {
+    const upstream = await fetch(`${backendUrl}/chat/stream`, {
+      method: "POST",
+      headers: { ...(token ? { "x-api-key": token } : {}) },
+      body: req.body,
+    });
+    
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers: upstream.headers,
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({ error: "Failed to connect to backend" }), { 
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    });
   }
-  return new Response(upstream.body, {
-    status: upstream.status,
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      "Connection": "keep-alive",
-    },
-  });
 }
 
 

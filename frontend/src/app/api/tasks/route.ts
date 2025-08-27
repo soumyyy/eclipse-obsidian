@@ -1,27 +1,37 @@
-import { NextRequest, NextResponse } from "next/server";
+import { getBackendUrl } from "@/utils/config";
 
-export async function GET(req: NextRequest) {
-  const backendUrl = process.env.BACKEND_URL || "http://127.0.0.1:8000";
+export async function GET(req: Request) {
+  const backendUrl = getBackendUrl();
   const token = process.env.BACKEND_API_KEY;
   const { searchParams } = new URL(req.url);
-  const qs = searchParams.toString();
-  const upstream = await fetch(`${backendUrl}/tasks?${qs}`, {
-    headers: { ...(token ? { "x-api-key": token } : {}) },
-    cache: "no-store",
-  });
-  const data = await upstream.json();
-  return NextResponse.json(data, { status: upstream.status });
+  
+  try {
+    const response = await fetch(`${backendUrl}/tasks?${searchParams.toString()}`, {
+      headers: { ...(token ? { "x-api-key": token } : {}) }
+    });
+    const data = await response.json();
+    return Response.json(data);
+  } catch (error) {
+    return Response.json({ error: "Failed to connect to backend" }, { status: 500 });
+  }
 }
 
-export async function POST(req: NextRequest) {
-  const backendUrl = process.env.BACKEND_URL || "http://127.0.0.1:8000";
+export async function POST(req: Request) {
+  const backendUrl = getBackendUrl();
   const token = process.env.BACKEND_API_KEY;
-  const body = await req.json();
-  const upstream = await fetch(`${backendUrl}/tasks`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...(token ? { "x-api-key": token } : {}) },
-    body: JSON.stringify(body),
-  });
-  const data = await upstream.json();
-  return NextResponse.json(data, { status: upstream.status });
+  
+  try {
+    const response = await fetch(`${backendUrl}/tasks`, {
+      method: "POST",
+      headers: { 
+        "Content-Type": "application/json",
+        ...(token ? { "x-api-key": token } : {})
+      },
+      body: JSON.stringify(await req.json())
+    });
+    const data = await response.json();
+    return Response.json(data);
+  } catch (error) {
+    return Response.json({ error: "Failed to connect to backend" }, { status: 500 });
+  }
 }
