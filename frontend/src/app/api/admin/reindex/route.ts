@@ -11,7 +11,7 @@ export async function POST() {
     });
     const data = await response.json();
     return Response.json(data);
-  } catch (error) {
+  } catch {
     return Response.json({ error: "Failed to connect to backend" }, { status: 500 });
   }
 }

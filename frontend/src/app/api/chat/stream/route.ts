@@ -15,7 +15,7 @@ export async function POST(req: Request) {
       status: upstream.status,
       headers: upstream.headers,
     });
-  } catch (error) {
+  } catch {
     return new Response(JSON.stringify({ error: "Failed to connect to backend" }), { 
       status: 500,
       headers: { "Content-Type": "application/json" }

@@ -22,7 +22,7 @@ export async function GET(req: Request) {
       pending: pending.items || [], 
       memories: mems.items || [] 
     });
-  } catch (error) {
+  } catch {
     return Response.json({ error: "Failed to connect to backend" }, { status: 500 });
   }
 }

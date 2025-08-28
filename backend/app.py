@@ -67,6 +67,22 @@ def _clear_ephemeral_context(session_id: str):
         del EPHEMERAL_SESSIONS[session_id]
         print(f"Cleared ephemeral context for session: {session_id}")
 
+def _escape_json_content(content: str) -> str:
+    """Properly escape content for JSON streaming responses"""
+    if not content:
+        return ""
+    
+    # Escape special characters that could break JSON
+    escaped = content.replace('\\', '\\\\')  # Backslash first
+    escaped = escaped.replace('"', '\\"')    # Double quotes
+    escaped = escaped.replace('\n', '\\n')   # Newlines
+    escaped = escaped.replace('\r', '\\r')   # Carriage returns
+    escaped = escaped.replace('\t', '\\t')   # Tabs
+    escaped = escaped.replace('\b', '\\b')   # Backspace
+    escaped = escaped.replace('\f', '\\f')   # Form feed
+    
+    return escaped
+
 def _get_context_hash(hits: List[Dict], file_context: str) -> str:
     """Generate a hash of context for caching purposes"""
     context_text = "".join([str(hit.get("content", "")) for hit in hits]) + file_context
@@ -928,51 +944,62 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
             for chunk in cerebras_chat_stream(messages, temperature=0.3, max_tokens=2000):
                 if chunk:
                     buffer.append(chunk)
+                    # Ensure each chunk is properly formatted
                     yield f"data: {chunk}\n\n"
                 # Heartbeat every ~12s to keep proxies from closing the stream
                 if time.time() - last_ping > 12:
                     last_ping = time.time()
                     yield "data: {\"type\":\"ping\"}\n\n"
+        except Exception as e:
+            print(f"Error in streaming: {e}")
+            # Send error response
+            yield f"data: {{\"type\":\"error\",\"content\":\"Error: {str(e)}\"}}\n\n"
         finally:
-            full = "".join(buffer)
-            _append_history(payload.user_id, "user", payload.message)
-            
-            # Store messages in Redis if session_id is provided
-            if payload.session_id:
-                try:
-                    redis_ops = RedisOps()
-                    
-                    # Store user message
-                    user_message = {
-                        "role": "user",
-                        "content": payload.message,
-                        "timestamp": datetime.utcnow().isoformat() + "Z"
-                    }
-                    redis_ops.store_chat_message(payload.user_id, payload.session_id, user_message)
-                    
-                    # Format to JSON-first → markdown and store formatted in history
-                    prefer_table = bool(re.search(r"\b(table|tabulate|comparison|vs)\b", payload.message, flags=re.I))
-                    prefer_compact = bool(re.fullmatch(r"\s*(hi|hello|hey|yo|hola)[.!?]?\s*", (payload.message or ""), flags=re.I))
-                    ans, formatted_md = _ensure_json_and_markdown(full, prefer_table=prefer_table, prefer_compact=prefer_compact)
-                    _append_history(payload.user_id, "assistant", formatted_md or full)
-                    
-                    # Store assistant message
-                    assistant_message = {
-                        "role": "assistant",
-                        "content": formatted_md or full,
-                        "timestamp": datetime.utcnow().isoformat() + "Z"
-                    }
-                    redis_ops.store_chat_message(payload.user_id, payload.session_id, assistant_message)
-                    
-                    # Cache the response for future similar queries
-                    _cache_response(payload.message, context_hash, formatted_md or full)
-                    
-                except Exception as e:
-                    print(f"Error storing messages in Redis: {e}")
-            
-            # Emit final formatted markdown
-            yield f"data: {{\"type\":\"final_md\",\"content\":\"{formatted_md or full}\"}}\n\n"
-            yield "data: [DONE]\n\n"
+            try:
+                full = "".join(buffer)
+                _append_history(payload.user_id, "user", payload.message)
+                
+                # Store messages in Redis if session_id is provided
+                if payload.session_id:
+                    try:
+                        redis_ops = RedisOps()
+                        
+                        # Store user message
+                        user_message = {
+                            "role": "user",
+                            "content": payload.message,
+                            "timestamp": datetime.utcnow().isoformat() + "Z"
+                        }
+                        redis_ops.store_chat_message(payload.user_id, payload.session_id, user_message)
+                        
+                        # Format to JSON-first → markdown and store formatted in history
+                        prefer_table = bool(re.search(r"\b(table|tabulate|comparison|vs)\b", payload.message, flags=re.I))
+                        prefer_compact = bool(re.fullmatch(r"\s*(hi|hello|hey|yo|hola)[.!?]?\s*", (payload.message or ""), flags=re.I))
+                        ans, formatted_md = _ensure_json_and_markdown(full, prefer_table=prefer_table, prefer_compact=prefer_compact)
+                        _append_history(payload.user_id, "assistant", formatted_md or full)
+                        
+                        # Store assistant message
+                        assistant_message = {
+                            "role": "assistant",
+                            "content": formatted_md or full,
+                            "timestamp": datetime.utcnow().isoformat() + "Z"
+                        }
+                        redis_ops.store_chat_message(payload.user_id, payload.session_id, assistant_message)
+                        
+                        # Cache the response for future similar queries
+                        _cache_response(payload.message, context_hash, formatted_md or full)
+                        
+                    except Exception as e:
+                        print(f"Error storing messages in Redis: {e}")
+                
+                # Emit final formatted markdown with proper escaping
+                final_content = _escape_json_content(formatted_md or full)
+                yield f"data: {{\"type\":\"final_md\",\"content\":\"{final_content}\"}}\n\n"
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                print(f"Error in final processing: {e}")
+                yield f"data: {{\"type\":\"error\",\"content\":\"Error processing response: {str(e)}\"}}\n\n"
+                yield "data: [DONE]\n\n"
 
     return StreamingResponse(
         event_gen(),

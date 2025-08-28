@@ -2,7 +2,7 @@
 import { useState, useRef, useEffect } from "react";
 import Message from "@/components/Message";
 import Sound from "@/components/Sound";
-import { getBackendUrl } from "@/utils/config";
+import { getBackendUrl, safeJsonParse, isValidStreamingData } from "@/utils/config";
 
 import HUD from "@/components/HUD";
 import TasksPanel from "@/components/TasksPanel";
@@ -17,10 +17,7 @@ interface ChatMessage {
   attachments?: { name: string; type: string }[];
 }
 
-interface FileAttachment {
-  name: string;
-  type: string;
-}
+
 
 // File icon component for different file types
 function FileIcon({ file }: { file: File }) {
@@ -137,7 +134,7 @@ export default function Home() {
       });
       
       if (response.ok) {
-        const data = await response.json();
+        await response.json();
         setActiveSession(newSessionId);
         
         // Store new session ID in localStorage for persistence
@@ -234,16 +231,10 @@ export default function Home() {
     return () => window.removeEventListener('keydown', onKey);
   }, [recording, showTasks]);
 
-  const sendMessage = async () => {
-    if (!input.trim() && pendingFiles.length === 0) return;
+  const sendMessage = async (userMessage: string) => {
+    if (!userMessage.trim()) return;
     
-    // Ensure we have an active session
-    if (!activeSession) {
-      await createNewChatSession();
-      return;
-    }
-    
-    const userMessage = input.trim();
+    // Add user message to chat
     const userMessageObj: ChatMessage = {
       role: "user",
       content: userMessage,
@@ -251,12 +242,10 @@ export default function Home() {
       formatted: true
     };
     
-    // Add user message immediately
     setMessages(prev => [...prev, userMessageObj]);
     setInput("");
     
     // Upload files first if any
-    let fileContext = "";
     if (pendingFiles.length > 0) {
       try {
         const formData = new FormData();
@@ -314,7 +303,7 @@ export default function Home() {
         throw new Error("No response body");
       }
       
-      let assistantMessage: ChatMessage = {
+      const assistantMessage: ChatMessage = {
         role: "assistant",
         content: "",
         sources: [],
@@ -325,50 +314,88 @@ export default function Home() {
       
       const decoder = new TextDecoder();
       let buffer = "";
+      let accumulatedContent = "";
       
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') {
-              // Mark message as formatted
-              setMessages(prev => prev.map((msg, idx) => 
-                idx === prev.length - 1 ? { ...msg, formatted: true } : msg
-              ));
-              break;
-            }
-            
-            try {
-              const parsed = JSON.parse(data);
-              if (parsed.type === 'final_md') {
-                // Replace the streaming content with final formatted content
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              if (data === '[DONE]') {
+                // Mark message as formatted
                 setMessages(prev => prev.map((msg, idx) => 
-                  idx === prev.length - 1 ? { ...msg, content: parsed.content, formatted: true } : msg
+                  idx === prev.length - 1 ? { ...msg, formatted: true } : msg
                 ));
                 break;
               }
-            } catch {
-              // Regular streaming content
-              if (data.trim()) {
-                setMessages(prev => prev.map((msg, idx) => 
-                  idx === prev.length - 1 ? { ...msg, content: msg.content + data } : msg
-                ));
+              
+              try {
+                const parsed = JSON.parse(data);
+                
+                // Handle different response types
+                if (parsed.type === 'final_md') {
+                  // Replace the streaming content with final formatted content
+                  setMessages(prev => prev.map((msg, idx) => 
+                    idx === prev.length - 1 ? { ...msg, content: parsed.content, formatted: true } : msg
+                  ));
+                  break;
+                } else if (parsed.type === 'error') {
+                  // Handle error responses
+                  setMessages(prev => prev.map((msg, idx) => 
+                    idx === prev.length - 1 ? { ...msg, content: `Error: ${parsed.content}`, formatted: true } : msg
+                  ));
+                  break;
+                } else if (parsed.type === 'ping') {
+                  // Handle ping messages (ignore them)
+                  continue;
+                }
+              } catch (parseError) {
+                // Regular streaming content - accumulate it
+                if (data.trim()) {
+                  accumulatedContent += data;
+                  setMessages(prev => prev.map((msg, idx) => 
+                    idx === prev.length - 1 ? { ...msg, content: accumulatedContent } : msg
+                  ));
+                }
               }
             }
           }
         }
+        
+        reader.releaseLock();
+      } catch (error) {
+        console.error("Error in streaming:", error);
+        
+        // Check if we have any accumulated content to show
+        if (accumulatedContent.trim()) {
+          // Show what we got before the error
+          setMessages(prev => prev.map((msg, idx) => 
+            idx === prev.length - 1 ? { ...msg, content: accumulatedContent + "\n\n[Response was cut off due to an error]", formatted: true } : msg
+          ));
+        } else {
+          // Show error message
+          const errorMessage: ChatMessage = {
+            role: "assistant",
+            content: "Sorry, I encountered an error. Please try again.",
+            sources: [],
+            formatted: true
+          };
+          setMessages(prev => [...prev, errorMessage]);
+        }
+      } finally {
+        setLoading(false);
       }
-      
-      reader.releaseLock();
     } catch (error) {
-      console.error("Error sending message:", error);
+      console.error("Error in chat stream:", error);
+      setLoading(false);
+      
       // Show error message
       const errorMessage: ChatMessage = {
         role: "assistant",
@@ -377,8 +404,6 @@ export default function Home() {
         formatted: true
       };
       setMessages(prev => [...prev, errorMessage]);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -573,7 +598,7 @@ export default function Home() {
 
         {/* Floating input bar */}
         <div className="fixed bottom-4 inset-x-0 px-3 pointer-events-none">
-          <form onSubmit={(e) => { e.preventDefault(); sendMessage(); }} className="max-w-5xl mx-auto pointer-events-auto">
+          <form onSubmit={(e) => { e.preventDefault(); sendMessage(input); }} className="max-w-5xl mx-auto pointer-events-auto">
             <div className="relative rounded-2xl border border-gray-600 bg-black/80 backdrop-blur-xl shadow-2xl flex items-center gap-2 px-3 py-2">
               {loading && <div className="loading-underline" />}
               <button
@@ -623,7 +648,7 @@ export default function Home() {
                   // Enter to send; Shift+Enter inserts newline
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
-                    sendMessage();
+                    sendMessage(input);
                   }
                 }}
                 placeholder={loading ? "Waiting for reply..." : creatingSession ? "Creating new chat..." : "Hey soumya"}
@@ -636,7 +661,7 @@ export default function Home() {
                   Transcribing{transcribingDots}
                 </span>
               )}
-              </div>
+            </div>
             <input
               type="file"
               accept=".pdf,.md,.markdown,text/markdown,text/plain,application/pdf"
