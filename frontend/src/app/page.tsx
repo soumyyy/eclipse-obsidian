@@ -2,7 +2,7 @@
 import { useState, useRef, useEffect } from "react";
 import Message from "@/components/Message";
 import Sound from "@/components/Sound";
-import { getBackendUrl, safeJsonParse, isValidStreamingData } from "@/utils/config";
+import { getBackendUrl } from "@/utils/config";
 
 import HUD from "@/components/HUD";
 import TasksPanel from "@/components/TasksPanel";
@@ -410,7 +410,7 @@ export default function Home() {
                   // Handle ping messages (ignore them)
                   continue;
                 }
-              } catch (parseError) {
+              } catch {
                 // Regular streaming content - accumulate it
                 if (data.trim()) {
                   accumulatedContent += data;

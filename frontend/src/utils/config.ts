@@ -25,35 +25,3 @@ export const getFrontendUrl = (): string => {
   
   return window.location.origin;
 };
-
-// Utility function to safely parse JSON responses
-export const safeJsonParse = (data: string): any | null => {
-  try {
-    return JSON.parse(data);
-  } catch (error) {
-    console.warn('Failed to parse JSON:', data, error);
-    return null;
-  }
-};
-
-// Utility function to validate streaming response data
-export const isValidStreamingData = (data: string): boolean => {
-  if (!data || typeof data !== 'string') return false;
-  
-  // Check if it's a complete JSON object
-  if (data.trim().startsWith('{') && data.trim().endsWith('}')) {
-    try {
-      JSON.parse(data);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  
-  // Check if it's a special command
-  if (data === '[DONE]' || data.startsWith('{"type":')) {
-    return true;
-  }
-  
-  return false;
-};
