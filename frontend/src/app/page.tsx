@@ -7,7 +7,8 @@ import { getBackendUrl } from "@/utils/config";
 import HUD from "@/components/HUD";
 import TasksPanel from "@/components/TasksPanel";
 import ChatSidebar from "@/components/ChatSidebar";
-import { Plus, Mic, SendHorizonal, MessageSquare } from "lucide-react";
+
+import { Plus, Mic, SendHorizonal } from "lucide-react";
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -25,15 +26,15 @@ function FileIcon({ file }: { file: File }) {
   const type = file.type;
   
   if (type.includes('pdf') || ext === 'pdf') {
-    return <div className="w-5 h-5 bg-red-500 rounded flex items-center justify-center text-white text-xs font-bold">PDF</div>;
+    return <div className="w-4 h-4 sm:w-5 sm:h-5 bg-red-500 rounded flex items-center justify-center text-white text-xs font-bold">PDF</div>;
   }
   if (type.includes('markdown') || ext === 'md' || ext === 'markdown') {
-    return <div className="w-5 h-5 bg-blue-500 rounded flex items-center justify-center text-white text-xs font-bold">MD</div>;
+    return <div className="w-4 h-4 sm:w-5 sm:h-5 bg-blue-500 rounded flex items-center justify-center text-white text-xs font-bold">MD</div>;
   }
   if (type.includes('text') || ext === 'txt') {
-    return <div className="w-5 h-5 bg-green-500 rounded flex items-center justify-center text-white text-xs font-bold">TXT</div>;
+    return <div className="w-4 h-4 sm:w-5 sm:h-5 bg-green-500 rounded flex items-center justify-center text-white text-xs font-bold">TXT</div>;
   }
-  return <div className="w-5 h-5 bg-gray-500 rounded flex items-center justify-center text-white text-xs font-bold">FILE</div>;
+  return <div className="w-4 h-4 sm:w-5 sm:h-5 bg-gray-500 rounded flex items-center justify-center text-white text-xs font-bold">FILE</div>;
 }
 
 export default function Home() {
@@ -88,9 +89,10 @@ export default function Home() {
   const [chatSidebarOpen, setChatSidebarOpen] = useState(false);
   const [creatingSession, setCreatingSession] = useState(false);
 
+
   const [healthy, setHealthy] = useState<boolean | null>(null);
-  const [backendUrl, setBackendUrl] = useState<string>('');
   const [refreshSidebar, setRefreshSidebar] = useState(0);
+
 
   // Function to update session title based on first message
   const updateSessionTitle = async (sessionId: string, firstMessage: string) => {
@@ -256,12 +258,28 @@ export default function Home() {
   // Focus input on mount
   useEffect(() => { inputRef.current?.focus(); }, []);
   
-  // Set backend URL on mount
+  // Check health on mount
   useEffect(() => {
-    const url = getBackendUrl();
-    setBackendUrl(url);
-    console.log('Backend URL:', url);
+    // Initial health check
+    checkHealth();
+    
+    // Set up periodic health checks every 30 seconds
+    const healthInterval = setInterval(checkHealth, 30000);
+    
+    return () => clearInterval(healthInterval);
   }, []);
+  
+  // Health check function
+  const checkHealth = async () => {
+    try {
+      const response = await fetch(`${getBackendUrl()}/health`, { cache: "no-store" });
+      const data = await response.json();
+      setHealthy(data.status === "ok");
+    } catch (error) {
+      setHealthy(false);
+      console.error("Health check failed:", error);
+    }
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -570,84 +588,77 @@ export default function Home() {
       {/* Main Content */}
       <div className="transition-all duration-300">
         {/* Header */}
-        <header className="sticky top-0 z-10 bg-black/90 backdrop-blur-xl border-b border-white/10 shadow-lg">
-          <div className="max-w-7xl mx-auto px-6 py-4">
+                <header className="sticky top-0 z-30 bg-black/90 backdrop-blur-xl border-b border-white/10 shadow-lg">
+          <div className="max-w-7xl mx-auto px-3 sm:px-4 lg:px-6 py-3 sm:py-4">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-6">
+              <div className="flex items-center gap-3 sm:gap-4">
                 <button
-                  onClick={() => setChatSidebarOpen(true)}
-                  className="p-2 rounded-full text-white/60 hover:text-white hover:bg-white/10 transition-colors border border-white/20"
-                  title="Open chats"
-                  aria-label="Open chats"
+                  onClick={() => setChatSidebarOpen(!chatSidebarOpen)}
+                  className="text-white/60 hover:text-white transition-colors cursor-pointer"
+                  aria-label="Toggle chat sidebar"
                 >
-                  <MessageSquare className="w-5 h-5" />
+                  <svg className="w-7 h-7 sm:w-7 sm:h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <rect x="3" y="3" width="18" height="18" rx="2" strokeWidth="1.5"/>
+                    <line x1="8" y1="3" x2="8" y2="21" strokeWidth="1.5"/>
+                    <line x1="10" y1="7" x2="6" y2="7" strokeWidth="1.5"/>
+                    <line x1="10" y1="11" x2="6" y2="11" strokeWidth="1.5"/>
+                  </svg>
                 </button>
-                
-                <div className="flex items-center gap-4">
-                  <button
-                    onClick={() => setShowTasks(!showTasks)}
-                    className="text-sm text-white/70 hover:text-white transition-colors hover:bg-white/10 px-3 py-1 rounded-lg"
-                  >
-                    Tasks
-                  </button>
-                  <a
-                    href="/memories"
-                    className="text-sm text-white/70 hover:text-white transition-colors hover:bg-white/10 px-3 py-1 rounded-lg"
-                  >
-                    Memories
-                  </a>
+                <div className="hidden sm:flex items-center gap-2">
+                  <h1 className="text-lg sm:text-xl font-bold text-white">Eclipse AI</h1>
+                  <span className="text-xs text-white/40 bg-white/10 px-2 py-1 rounded-lg">Assistant</span>
                 </div>
-                
-
+                <div className="sm:hidden">
+                  <h1 className="text-lg font-bold text-white">Eclipse</h1>
+                </div>
               </div>
               
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2 sm:gap-4">
                 <button
-                  onClick={async () => {
-                    try {
-                      const r = await fetch(`${getBackendUrl()}/admin/reindex`, { 
-                        method: "POST",
-                        headers: {
-                          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
-                        }
-                      });
-                      const d = await r.json();
-                      if (!r.ok || !d?.ok) throw new Error(d?.error || "Reindex failed");
-                      alert("Reindex started / completed.");
-                    } catch (e: unknown) {
-                      const errorMessage = e instanceof Error ? e.message : 'Unknown error occurred';
-                      alert(`Reindex error: ${errorMessage}`);
-                    }
-                  }}
-                  className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-3 py-1 rounded-lg border border-white/20"
+                  onClick={() => setShowTasks(!showTasks)}
+                  className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-2 sm:px-3 py-1 rounded-lg border border-white/20"
                 >
-                  Reindex
+                  <span>Tasks</span>
                 </button>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-white/40">
-                    Backend: {backendUrl.replace(/^https?:\/\//, '').replace(/:\d+$/, '')}
-                  </span>
-                  <button
+                                  <button
                     onClick={async () => {
                       try {
-                        const r = await fetch(`${getBackendUrl()}/health`, { cache: "no-store" });
+                        const r = await fetch(`${getBackendUrl()}/admin/reindex`, { 
+                          method: "POST",
+                          headers: {
+                            'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
+                          }
+                        });
                         const d = await r.json();
-                        setHealthy(d.status === "ok");
-                        if (d.status !== "ok") alert(`Backend issue: ${d.error || "unknown"}`);
-                        else alert("Backend is healthy!");
+                        if (!r.ok || !d?.ok) throw new Error(d?.error || "Reindex failed");
+                        alert("Reindex started / completed.");
                       } catch (e: unknown) {
-                        setHealthy(false);
                         const errorMessage = e instanceof Error ? e.message : 'Unknown error occurred';
-                        alert(`Backend issue: ${errorMessage}`);
+                        alert(`Reindex error: ${errorMessage}`);
                       }
                     }}
-                    className="relative text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-3 py-1 rounded-lg border border-white/20"
-                    aria-label="backend status"
-                    title="Backend status"
+                    className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-2 sm:px-3 py-1 rounded-lg border border-white/20"
                   >
-                    Health
-                    <span className={(healthy === null ? "bg-gray-500" : healthy ? "bg-green-500" : "bg-red-500") + " absolute -top-1 -right-1 w-2 h-2 rounded-full"} />
+                    <span>Reindex</span>
                   </button>
+                  <div className="hidden sm:flex items-center gap-2">
+                    <div className="flex items-center gap-2">
+                      <div className={`w-2 h-2 rounded-full transition-colors duration-300 ${
+                        healthy === null ? "bg-gray-500" : 
+                        healthy ? "bg-green-500" : "bg-red-500"
+                      }`} />
+                    </div>
+                  </div>
+                <div className="sm:hidden">
+                  <div className="flex items-center gap-2">
+                    {/* <div className="text-xs text-white/40">
+                      Backend
+                    </div> */}
+                    <div className={`w-2 h-2 rounded-full transition-colors duration-300 ${
+                      healthy === null ? "bg-gray-500" : 
+                      healthy ? "bg-green-500" : "bg-red-500"
+                    }`} />
+                  </div>
                 </div>
               </div>
             </div>
@@ -655,7 +666,7 @@ export default function Home() {
         </header>
 
         <main className="flex-1">
-          <div ref={listRef} className="scrollbar-thin max-w-5xl mx-auto px-3 lg:px-6 py-5 space-y-3.5 overflow-y-auto" style={{ maxHeight: "calc(100dvh - 140px)", scrollbarGutter: "stable both-edges" }}>
+          <div ref={listRef} className="scrollbar-thin max-w-5xl mx-auto px-2 sm:px-3 lg:px-6 py-3 sm:py-5 space-y-3 sm:space-y-3.5 overflow-y-auto" style={{ maxHeight: "calc(100dvh - 140px)", scrollbarGutter: "stable both-edges" }}>
             {messages.map((m, i) => (
               <Message key={i} role={m.role} content={m.content} sources={m.sources} attachments={m.attachments} />
             ))}
@@ -664,89 +675,100 @@ export default function Home() {
         </main>
 
         {/* Floating input bar */}
-        <div className="fixed bottom-4 inset-x-0 px-3 pointer-events-none">
+        <div className="fixed bottom-2 sm:bottom-4 inset-x-0 px-2 sm:px-3 pointer-events-none">
           <form onSubmit={(e) => { e.preventDefault(); sendMessage(input); }} className="max-w-5xl mx-auto pointer-events-auto">
-            <div className="relative rounded-2xl border border-white/20 bg-black/80 backdrop-blur-xl shadow-2xl flex items-center gap-2 px-3 py-2">
+            {/* File uploads display - above the input bar */}
+            {pendingFiles.length > 0 && (
+              <div className="mb-3 flex flex-wrap gap-2 justify-center">
+                {pendingFiles.map((f, i) => (
+                  <div key={i} className="inline-flex items-center gap-2 text-xs sm:text-sm bg-white/10 border border-white/20 rounded-lg px-3 py-2 backdrop-blur-sm max-w-full">
+                    <FileIcon file={f} />
+                    <span className="text-white/90 font-medium max-w-[120px] sm:max-w-[150px] lg:max-w-none truncate">{f.name}</span>
+                    <button
+                      type="button"
+                      aria-label={`Remove ${f.name}`}
+                      onClick={() => setPendingFiles(prev => prev.filter((_, idx) => idx !== i))}
+                      className="opacity-60 hover:opacity-100 ml-2 text-gray-400 hover:text-white transition-opacity flex-shrink-0 w-5 h-5 flex items-center justify-center"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            
+            {/* Main input bar */}
+            <div className="relative rounded-2xl border border-white/20 bg-black/80 backdrop-blur-xl shadow-2xl flex items-center gap-3 px-3 py-2 sm:py-3">
               {loading && <div className="loading-underline" />}
+              
+              {/* Upload button - larger on mobile */}
               <button
                 type="button"
                 aria-label="Upload files"
                 title="Upload files"
                 disabled={loading}
                 onClick={() => fileInputRef.current?.click()}
-                className="inline-flex items-center justify-center w-8 h-8 rounded-full text-white/60 hover:text-white hover:bg-white/10 transition-colors border border-white/20"
+                className="inline-flex items-center justify-center w-8 h-8 sm:w-8 sm:h-8 rounded-full text-white/60 hover:text-white hover:bg-white/10 transition-colors border border-white/20 flex-shrink-0"
               >
-                <Plus size={18} />
+                <Plus size={18} className="sm:w-[18px] sm:h-[18px]" />
               </button>
+              
+              {/* Text input area */}
               <div className="flex-1 min-w-0 relative">
-              {pendingFiles.length > 0 && (
-                <div className="flex flex-wrap gap-2 mb-3">
-                  {pendingFiles.map((f, i) => (
-                    <div key={i} className="inline-flex items-center gap-2 text-sm bg-white/10 border border-white/20 rounded-lg px-3 py-2 backdrop-blur-sm">
-                      <FileIcon file={f} />
-                      <span className="text-white/90 font-medium">{f.name}</span>
-                      <button
-                        type="button"
-                        aria-label={`Remove ${f.name}`}
-                        onClick={() => setPendingFiles(prev => prev.filter((_, idx) => idx !== i))}
-                        className="opacity-60 hover:opacity-100 ml-2 text-gray-400 hover:text-white transition-opacity"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <textarea
-                id="chat-input"
-                name="chat-input"
-                value={input}
+                <textarea
+                  id="chat-input"
+                  name="chat-input"
+                  value={input}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    // auto-resize
+                    const el = inputRef.current;
+                    if (el) {
+                      el.style.height = 'auto';
+                      const max = 160; // px max
+                      el.style.height = Math.min(el.scrollHeight, max) + 'px';
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    // Enter to send; Shift+Enter inserts newline
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      sendMessage(input);
+                    }
+                  }}
+                  placeholder={loading ? "Waiting for reply..." : creatingSession ? "Creating new chat..." : "Hey soumya"}
+                  ref={inputRef}
+                  rows={1}
+                  className="w-full bg-transparent text-white px-2 py-1 sm:py-2 pr-2 outline-none placeholder:text-white/40 resize-none overflow-y-auto text-sm sm:text-base"
+                />
+                {transcribing && (
+                  <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-white/60">
+                    Transcribing{transcribingDots}
+                  </span>
+                )}
+              </div>
+              
+              {/* Hidden file input */}
+              <input
+                type="file"
+                accept=".pdf,.md,.markdown,text/markdown,text/plain,application/pdf"
+                multiple
+                ref={fileInputRef}
+                id="file-upload"
+                name="file-upload"
                 onChange={(e) => {
-                  setInput(e.target.value);
-                  // auto-resize
-                  const el = inputRef.current;
-                  if (el) {
-                    el.style.height = 'auto';
-                    const max = 160; // px max
-                    el.style.height = Math.min(el.scrollHeight, max) + 'px';
+                  const files = Array.from(e.target.files || []);
+                  if (files.length) {
+                    // Don't auto-upload, just add to pending files
+                    setPendingFiles((prev) => [...prev, ...files]);
                   }
+                  // reset so selecting same file again re-triggers change
+                  if (fileInputRef.current) fileInputRef.current.value = "";
                 }}
-                onKeyDown={(e) => {
-                  // Enter to send; Shift+Enter inserts newline
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    sendMessage(input);
-                  }
-                }}
-                placeholder={loading ? "Waiting for reply..." : creatingSession ? "Creating new chat..." : "Hey soumya"}
-                ref={inputRef}
-                rows={1}
-                className="w-full bg-transparent text-white px-3 py-2 pr-12 outline-none placeholder:text-white/40 resize-none overflow-y-auto"
+                className="hidden"
               />
-              {transcribing && (
-                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-white/60">
-                  Transcribing{transcribingDots}
-                </span>
-              )}
-            </div>
-            <input
-              type="file"
-              accept=".pdf,.md,.markdown,text/markdown,text/plain,application/pdf"
-              multiple
-              ref={fileInputRef}
-              id="file-upload"
-              name="file-upload"
-              onChange={(e) => {
-                const files = Array.from(e.target.files || []);
-                if (files.length) {
-                  // Don't auto-upload, just add to pending files
-                  setPendingFiles((prev) => [...prev, ...files]);
-                }
-                // reset so selecting same file again re-triggers change
-                if (fileInputRef.current) fileInputRef.current.value = "";
-              }}
-              className="hidden"
-            />
+              
+              {/* Action buttons - larger on mobile */}
               <button
                 type="button"
                 aria-label={recording ? "Stop recording" : "Start recording"}
@@ -758,18 +780,19 @@ export default function Home() {
                     startRecording();
                   }
                 }}
-                className={"inline-flex items-center justify-center w-8 h-8 rounded-full transition-all duration-200 " + (recording ? "bg-white/20 text-white border border-white/30 animate-pulse" : "text-white/60 hover:text-white hover:bg-white/10 border border-white/20")}
+                className={"inline-flex items-center justify-center w-8 h-8 sm:w-8 sm:h-8 rounded-full transition-all duration-200 flex-shrink-0 " + (recording ? "bg-white/20 text-white border border-white/30 animate-pulse" : "text-white/60 hover:text-white hover:bg-white/10 border border-white/20")}
               >
-                <Mic size={18} />
+                <Mic size={18} className="sm:w-[18px] sm:h-[18px]" />
               </button>
+              
               <button
                 type="submit"
                 disabled={loading}
                 aria-label="Send"
                 title="Send"
-                className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-white/20 text-white disabled:opacity-50 hover:bg-white/30 border border-white/30 shadow-lg"
+                className="inline-flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white/20 text-white disabled:opacity-50 hover:bg-white/30 border border-white/30 shadow-lg flex-shrink-0"
               >
-                <SendHorizonal size={18} />
+                <SendHorizonal size={18} className="sm:w-[18px] sm:h-[18px]" />
               </button>
             </div>
           </form>
@@ -787,6 +810,7 @@ export default function Home() {
          currentSessionId={activeSession}
          refreshTrigger={refreshSidebar}
        />
+
     </div>
   );
 }

@@ -221,18 +221,18 @@ export default function ChatSidebar({
       )}
       
       {/* Floating Sidebar with Apple-like minimalism */}
-      <div className={`fixed left-4 top-4 h-[calc(100vh-2rem)] w-80 bg-black/95 backdrop-blur-2xl border border-white/10 rounded-3xl shadow-2xl transform transition-all duration-500 ease-out z-50 ${
+      <div className={`fixed left-0 sm:left-4 top-0 sm:top-4 h-full sm:h-[calc(100vh-2rem)] w-full sm:w-80 bg-black/95 backdrop-blur-2xl border border-white/10 rounded-none sm:rounded-3xl shadow-2xl transform transition-all duration-500 ease-out z-50 ${
         isOpen 
           ? 'translate-x-0 opacity-100 scale-100' 
           : '-translate-x-full opacity-0 scale-95'
       }`}>
         {/* Header with minimal styling */}
-        <div className="flex items-center justify-between p-6 border-b border-white/10">
+        <div className="flex items-center justify-between p-4 sm:p-6 border-b border-white/10">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-white/10 rounded-2xl">
               <MessageSquare className="h-5 w-5 text-white/80" />
             </div>
-            <h2 className="text-xl font-semibold text-white">Chats</h2>
+            <h2 className="text-lg sm:text-xl font-semibold text-white">Chats</h2>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -256,11 +256,11 @@ export default function ChatSidebar({
         </div>
 
         {/* New Chat Button with Apple-like design */}
-        <div className="p-6">
+        <div className="p-4 sm:p-6">
           <Button
             onClick={createNewSession}
             disabled={isCreating}
-            className="w-full bg-white/10 hover:bg-white/20 text-white font-medium py-4 rounded-2xl transition-all duration-300 border border-white/20 shadow-lg hover:shadow-xl transform hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full bg-white/10 hover:bg-white/20 text-white font-medium py-3 sm:py-4 rounded-2xl transition-all duration-300 border border-white/20 shadow-lg hover:shadow-xl transform hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isCreating ? (
               <div className="flex items-center gap-2">
@@ -277,9 +277,9 @@ export default function ChatSidebar({
         </div>
 
         {/* Sessions List with clean spacing */}
-        <div className="flex-1 overflow-y-auto px-3 pb-3">
+        <div className="flex-1 overflow-y-auto px-3 sm:px-3 pb-3">
           {sessions.length === 0 ? (
-            <div className="p-8 text-center text-white/50">
+            <div className="p-6 sm:p-8 text-center text-white/50">
               <div className="p-4 bg-white/5 rounded-2xl mb-4 inline-block">
                 <MessageSquare className="h-8 w-8 text-white/30" />
               </div>
@@ -291,7 +291,7 @@ export default function ChatSidebar({
               {sessions.map((session) => (
                 <div
                   key={session.id}
-                  className={`group relative flex items-center gap-3 p-4 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] ${
+                  className={`group relative flex items-center gap-3 p-3 sm:p-4 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] ${
                     currentSessionId === session.id
                       ? 'bg-white/10 text-white border border-white/20 shadow-lg'
                       : 'hover:bg-white/5 text-white/80 hover:text-white border border-transparent hover:border-white/10'
@@ -382,7 +382,7 @@ export default function ChatSidebar({
         </div>
 
         {/* Footer with minimal branding */}
-        <div className="border-t border-white/10 p-6 bg-white/5 rounded-b-3xl">
+        <div className="border-t border-white/10 p-4 sm:p-6 bg-white/5 rounded-b-none sm:rounded-b-3xl">
           <div className="flex items-center justify-center gap-2 text-sm text-white/50">
             <Sparkles className="h-4 w-4 text-white/40" />
             <span className="font-medium">Eclipse AI</span>

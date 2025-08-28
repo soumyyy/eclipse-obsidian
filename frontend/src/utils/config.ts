@@ -22,7 +22,7 @@ export const getBackendUrl = (): string => {
   // Production: Vercel deployment
   if (hostname.includes('vercel.app') || hostname.includes('vercel.com')) {
     // Use your custom VPS backend URL
-    return 'https://134.209.147.97.nip.io'; // Replace with your actual VPS domain/IP
+    return 'https://134.209.147.97.nip.io:8000'; // Added port 8000
   }
   
   // Custom domain or other hosting
@@ -36,9 +36,9 @@ export const getBackendUrl = (): string => {
 };
 
 export const getFrontendUrl = (): string => {
-  if (typeof window === 'undefined') {
-    return process.env.NEXT_PUBLIC_FRONTEND_URL || 'http://localhost:3000';
+  if (typeof window !== 'undefined') {
+    return window.location.origin;
   }
   
-  return window.location.origin;
+  return process.env.NEXT_PUBLIC_FRONTEND_URL || 'http://localhost:3000';
 };

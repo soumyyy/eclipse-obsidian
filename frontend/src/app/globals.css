@@ -92,3 +92,72 @@ body {
 *::-webkit-scrollbar-track { background: rgba(255,255,255,0.03); }
 *::-webkit-scrollbar-thumb { background-color: rgba(255,255,255,0.15); border-radius: 10px; border: 2px solid rgba(0,0,0,0); background-clip: padding-box; }
 * { scrollbar-color: rgba(255,255,255,0.15) transparent; scrollbar-width: thin; }
+
+/* Ensure proper mobile viewport */
+@viewport {
+  width: device-width;
+  initial-scale: 1;
+  maximum-scale: 1;
+  user-scalable: no;
+}
+
+/* Mobile-specific improvements */
+@media (max-width: 640px) {
+  /* Improve touch targets on mobile */
+  button, [role="button"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  
+  /* Better mobile spacing */
+  .space-y-3 > * + * {
+    margin-top: 0.75rem;
+  }
+  
+  /* Mobile-optimized input */
+  input, textarea {
+    font-size: 16px; /* Prevents zoom on iOS */
+  }
+  
+  /* Mobile-friendly scrollbar */
+  *::-webkit-scrollbar { width: 6px; }
+  
+  /* Better mobile touch feedback */
+  .hover\:bg-white\/10:hover {
+    background-color: rgba(255, 255, 255, 0.15);
+  }
+  
+  /* Mobile-optimized animations */
+  .animate-slide-in-up {
+    animation-duration: 200ms;
+  }
+}
+
+/* Full-screen web app support */
+@media all and (display-mode: standalone) {
+  /* Hide browser UI elements when in standalone mode */
+  body {
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* iOS Safari specific fixes */
+@supports (-webkit-touch-callout: none) {
+  /* iOS-specific styles */
+  body {
+    -webkit-overflow-scrolling: touch;
+  }
+  
+  /* Fix for iOS viewport height */
+  .h-screen {
+    height: 100vh;
+    height: -webkit-fill-available;
+  }
+  
+  .min-h-screen {
+    min-height: 100vh;
+    min-height: -webkit-fill-available;
+  }
+}

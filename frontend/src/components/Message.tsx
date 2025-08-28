@@ -33,18 +33,18 @@ function FileIcon({ file }: { file: { name: string; type: string } }) {
   const type = file.type;
   
   if (type.includes('pdf') || ext === 'pdf') {
-    return <div className="w-5 h-5 bg-red-500 rounded flex items-center justify-center text-white text-xs font-bold">PDF</div>;
+    return <div className="w-4 h-4 sm:w-5 sm:h-5 bg-red-500 rounded flex items-center justify-center text-white text-xs font-bold">PDF</div>;
   }
   if (type.includes('markdown') || ext === 'md' || ext === 'markdown') {
-    return <div className="w-5 h-5 bg-blue-500 rounded flex items-center justify-center text-white text-xs font-bold">MD</div>;
+    return <div className="w-4 h-4 sm:w-5 sm:h-5 bg-blue-500 rounded flex items-center justify-center text-white text-xs font-bold">MD</div>;
   }
   if (type.includes('text') || ext === 'txt') {
-    return <div className="w-5 h-5 bg-green-500 rounded flex items-center justify-center text-white text-xs font-bold">TXT</div>;
+    return <div className="w-4 h-4 sm:w-5 sm:h-5 bg-green-500 rounded flex items-center justify-center text-white text-xs font-bold">TXT</div>;
   }
-  return <div className="w-5 h-5 bg-gray-500 rounded flex items-center justify-center text-white text-xs font-bold">FILE</div>;
+  return <div className="w-4 h-4 sm:w-5 sm:h-5 bg-gray-500 rounded flex items-center justify-center text-white text-xs font-bold">FILE</div>;
 }
 
-export default function Message({ role, content, formatted, attachments }: MessageProps) {
+export default function Message({ role, content, formatted, attachments, sources }: MessageProps) {
   const isUser = role === "user";
   const normalized = React.useMemo(() => (isUser || formatted ? content : normalizeLLMMarkdown(content)), [content, isUser, formatted]);
 
@@ -68,20 +68,20 @@ export default function Message({ role, content, formatted, attachments }: Messa
     <div className={isUser ? "flex justify-end" : "flex justify-start"}>
               <div
         className={[
-          "relative max-w-[85%] rounded-2xl border shadow-sm",
+          "relative max-w-[85%] sm:max-w-[85%] rounded-2xl border shadow-sm",
           isUser
-            ? "px-4 sm:px-5 py-3.5 border-white/20 bg-white/5" 
-            : "px-4 sm:px-5 py-4 border-white/10 bg-white/5 animate-slide-in-up",
+            ? "px-3 sm:px-4 lg:px-5 py-2.5 sm:py-3.5 border-white/20 bg-white/5" 
+            : "px-3 sm:px-4 lg:px-5 py-3 sm:py-4 border-white/10 bg-white/5 animate-slide-in-up",
         ].join(" ")}
       >
         {isUser ? (
           <div>
             {attachments && attachments.length > 0 && (
-              <div className="mb-3 flex flex-wrap gap-2">
+              <div className="mb-2 sm:mb-3 flex flex-wrap gap-2">
                 {attachments.map((file, i) => (
-                  <div key={i} className="inline-flex items-center gap-2 text-sm bg-white/5 border border-white/20 rounded-lg px-3 py-2 backdrop-blur-sm">
+                  <div key={i} className="inline-flex items-center gap-2 text-xs sm:text-sm bg-white/5 border border-white/20 rounded-lg px-2 sm:px-3 py-1.5 sm:py-2 backdrop-blur-sm">
                     <FileIcon file={file} />
-                    <span className="text-white/90 font-medium">{file.name}</span>
+                    <span className="text-white/90 font-medium max-w-[100px] sm:max-w-none truncate">{file.name}</span>
                   </div>
                 ))}
               </div>
@@ -94,131 +94,66 @@ export default function Message({ role, content, formatted, attachments }: Messa
           </div>
         ) : (
           <ReactMarkdown
-            className="prose prose-invert prose-sm max-w-none [&_table]:my-0 [&_table]:mt-0 [&_table]:mb-0 [&_th]:pl-6 [&_th]:pr-6 [&_td]:pl-6 [&_td]:pr-6"
+            className="prose prose-invert prose-sm max-w-none [&_table]:my-0 [&_table]:mt-0 [&_table]:mb-0 [&_th]:pl-3 sm:[&_th]:pl-6 [&_th]:pr-3 sm:[&_th]:pr-6 [&_td]:pl-3 sm:[&_td]:pl-6 [&_td]:pr-3 sm:[&_td]:pr-6"
             remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
             rehypePlugins={[
               rehypeKatex,
-              [rehypeSanitize, { ...defaultSchema }],
+              [rehypeSanitize, {
+                ...defaultSchema,
+                attributes: {
+                  ...defaultSchema.attributes,
+                  code: [...(defaultSchema.attributes?.code || []), 'className'],
+                  pre: [...(defaultSchema.attributes?.pre || []), 'className'],
+                }
+              }]
             ]}
             components={{
-              h1: ({children}) => (
-                <h1 className="text-xl font-bold text-white mb-3 mt-4 first:mt-0 border-b border-slate-700 pb-2">{children}</h1>
-              ),
-              h2: ({children}) => (
-                <h2 className="text-lg font-bold text-white mb-3 mt-6 first:mt-0">{children}</h2>
-              ),
-              h3: ({children}) => (
-                <h3 className="text-base font-bold text-white mb-2 mt-3 first:mt-0">{children}</h3>
-              ),
-              h4: ({children}) => (
-                <h4 className="text-sm font-bold text-white mb-2 mt-3 first:mt-0">{children}</h4>
-              ),
-              
-              p: ({children}) => (
-                <p className="text-sm text-white/90 mb-3 leading-relaxed">
-                  {children}
-                </p>
-              ),
-              
-              strong: ({children}) => (
-                <strong className="font-bold text-white">
-                  {children}
-                </strong>
-              ),
-              em: ({children}) => (
-                <em className="italic text-white/80">
-                  {children}
-                </em>
-              ),
-              
-              ul: ({children}) => (
-                <ul className="list-disc ml-5 mb-3 space-y-1">
-                  {children}
-                </ul>
-              ),
-              ol: ({children}) => (
-                <ol className="list-decimal ml-5 mb-3 space-y-1">
-                  {children}
-                </ol>
-              ),
-              li: ({children}) => (
-                <li className="text-sm text-white/90">
-                  {children}
-                </li>
-              ),
-              
-              a: ({children, href}) => (
-                <a 
-                  href={href} 
-                  className="text-white/70 hover:text-white/90 underline" 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                >
-                  {children}
-                </a>
-              ),
-              
-              blockquote: ({children}) => (
-                <blockquote className="border-l-4 border-white/20 pl-4 my-3 italic text-white/70">
-                  {children}
-                </blockquote>
-              ),
-              
+              // Custom components for better styling
+              h1: ({children}) => <h1 className="text-lg sm:text-xl font-bold text-white mb-3 sm:mb-4">{children}</h1>,
+              h2: ({children}) => <h2 className="text-base sm:text-lg font-bold text-white mb-2 sm:mb-3">{children}</h2>,
+              h3: ({children}) => <h3 className="text-sm sm:text-base font-bold text-white mb-2">{children}</h3>,
+              p: ({children}) => <p className="text-sm sm:text-base text-white/90 mb-2 sm:mb-3 leading-relaxed">{children}</p>,
+              ul: ({children}) => <ul className="text-sm sm:text-base text-white/90 mb-2 sm:mb-3 space-y-1 sm:space-y-2 list-disc list-inside">{children}</ul>,
+              ol: ({children}) => <ol className="text-sm sm:text-base text-white/90 mb-2 sm:mb-3 space-y-1 sm:space-y-2 list-decimal list-inside">{children}</ol>,
+              li: ({children}) => <li className="text-sm sm:text-base text-white/90">{children}</li>,
+              blockquote: ({children}) => <blockquote className="text-sm sm:text-base text-white/70 border-l-2 border-white/20 pl-3 sm:pl-4 py-1 sm:py-2 my-2 sm:my-3 bg-white/5 rounded-r-lg">{children}</blockquote>,
               code: ({children, className}) => {
-                if (className?.includes("language-")) {
-                  const language = className.replace("language-", "");
-                  const codeString = String(children);
+                if (className && className.includes('language-')) {
                   return (
-                    <div className="my-4 rounded-xl bg-black/60 border border-white/10">
-                      <div className="px-3 py-1.5 bg-black/50 border-b border-white/10 text-xs text-white/60 flex items-center justify-between">
-                        <span className="uppercase tracking-wide opacity-70">{language}</span>
-                        <button
-                          type="button"
-                          onClick={async () => { try { await navigator.clipboard.writeText(codeString); } catch {} }}
-                          className="px-2 py-0.5 rounded border border-white/10 text-white/70 hover:text-white hover:bg-white/10"
-                          aria-label="Copy code"
-                        >
-                          Copy
-                        </button>
-                      </div>
-                      <pre className="p-4 overflow-x-auto text-sm leading-relaxed"><code className="text-white/90">{codeString}</code></pre>
-                    </div>
+                    <code className={`text-xs sm:text-sm bg-white/10 text-white/90 px-2 sm:px-3 py-1 rounded-lg font-mono ${className}`}>
+                      {children}
+                    </code>
                   );
                 }
-                return <code className="px-1.5 py-0.5 bg-white/10 rounded text-sm font-mono text-white/90">{children}</code>;
+                return <code className="text-xs sm:text-sm bg-white/10 text-white/90 px-1.5 sm:px-2 py-0.5 rounded font-mono">{children}</code>;
               },
-              
-              table: ({children}) => (
-                <div className="my-0 overflow-x-auto rounded-xl border border-white/20 bg-white/5 shadow-sm ring-1 ring-white/5 inline-block max-w-full">
-                  <table className="w-full border-separate border-spacing-0">
-                    {children}
-                  </table>
-                </div>
-              ),
-              
-              th: ({children}) => (
-                <th className="!pl-3 !pr-6 py-2.5 bg-white/10 supports-[backdrop-filter]:bg-white/10 text-white font-semibold text-left text-sm whitespace-pre-wrap break-words align-top sticky -top-px z-10 border-b border-white/20 first:rounded-tl-xl last:rounded-tr-xl">
-                  {children}
-                </th>
-              ),
-              
-              td: ({children}) => (
-                <td className="!pl-3 !pr-6 py-2.5 text-white/90 text-sm whitespace-pre-wrap break-words align-top border-b border-white/10">
-                  {children}
-                </td>
-              ),
-              tbody: ({children}) => (
-                <tbody className="[&_tr:hover]:bg-white/5">{children}</tbody>
-              ),
-              tr: ({children}) => (
-                <tr className="odd:bg-white/5 transition-colors">{children}</tr>
-              ),
-              
-              hr: () => <hr className="my-6 border-white/20" />
+              pre: ({children}) => <pre className="text-xs sm:text-sm bg-white/10 text-white/90 p-2 sm:p-3 rounded-lg font-mono overflow-x-auto my-2 sm:my-3">{children}</pre>,
+              a: ({children, href}) => <a href={href} className="text-cyan-400 hover:text-cyan-300 underline decoration-cyan-400/30 hover:decoration-cyan-400/50 transition-colors">{children}</a>,
+              table: ({children}) => <div className="overflow-x-auto my-2 sm:my-3"><table className="min-w-full border-collapse border border-white/20 rounded-lg overflow-hidden">{children}</table></div>,
+              th: ({children}) => <th className="text-xs sm:text-sm font-bold text-white bg-white/10 px-2 sm:px-3 py-2 border border-white/20 text-left">{children}</th>,
+              td: ({children}) => <td className="text-xs sm:text-sm text-white/90 px-2 sm:px-3 py-2 border border-white/20">{children}</td>,
+              strong: ({children}) => <strong className="font-bold text-white">{children}</strong>,
+              em: ({children}) => <em className="italic text-white/80">{children}</em>,
+              hr: () => <hr className="border-white/20 my-3 sm:my-4" />,
             }}
           >
             {normalized}
           </ReactMarkdown>
+        )}
+
+        {/* Sources section */}
+        {sources && sources.length > 0 && (
+          <div className="mt-3 sm:mt-4 pt-2 sm:pt-3 border-t border-white/10">
+            <div className="text-xs text-white/50 mb-2">Sources:</div>
+            <div className="space-y-1 sm:space-y-2">
+              {sources.map((source, index) => (
+                <div key={index} className="flex items-center justify-between text-xs bg-white/5 rounded-lg px-2 sm:px-3 py-1.5 sm:py-2">
+                  <span className="text-white/70 font-mono truncate">{source.path}</span>
+                  <span className="text-white/50 ml-2 sm:ml-3">{(source.score * 100).toFixed(1)}%</span>
+                </div>
+              ))}
+            </div>
+          </div>
         )}
       </div>
     </div>
