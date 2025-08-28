@@ -620,7 +620,13 @@ export default function Home() {
                 >
                   <span>Tasks</span>
                 </button>
-                                  <button
+                <button
+                  onClick={() => window.location.href = '/memories'}
+                  className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-2 sm:px-3 py-1 rounded-lg border border-white/20"
+                >
+                  <span>Memories</span>
+                </button>
+                <button
                     onClick={async () => {
                       try {
                         const r = await fetch(`${getBackendUrl()}/admin/reindex`, { 
@@ -803,6 +809,7 @@ export default function Home() {
              {/* Existing Components */}
        <HUD />
        <TasksPanel isOpen={showTasks} onClose={() => setShowTasks(false)} />
+
        <ChatSidebar 
          isOpen={chatSidebarOpen}
          onClose={() => setChatSidebarOpen(false)}
