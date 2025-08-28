@@ -89,6 +89,7 @@ export default function Home() {
   const [creatingSession, setCreatingSession] = useState(false);
 
   const [healthy, setHealthy] = useState<boolean | null>(null);
+  const [backendUrl, setBackendUrl] = useState<string>('');
   const [refreshSidebar, setRefreshSidebar] = useState(0);
 
   // Function to update session title based on first message
@@ -254,6 +255,13 @@ export default function Home() {
 
   // Focus input on mount
   useEffect(() => { inputRef.current?.focus(); }, []);
+  
+  // Set backend URL on mount
+  useEffect(() => {
+    const url = getBackendUrl();
+    setBackendUrl(url);
+    console.log('Backend URL:', url);
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -615,27 +623,32 @@ export default function Home() {
                 >
                   Reindex
                 </button>
-                <button
-                  onClick={async () => {
-                    try {
-                      const r = await fetch(`${getBackendUrl()}/health`, { cache: "no-store" });
-                      const d = await r.json();
-                      setHealthy(d.status === "ok");
-                      if (d.status !== "ok") alert(`Backend issue: ${d.error || "unknown"}`);
-                      else alert("Backend is healthy!");
-                    } catch (e: unknown) {
-                      setHealthy(false);
-                      const errorMessage = e instanceof Error ? e.message : 'Unknown error occurred';
-                      alert(`Backend issue: ${errorMessage}`);
-                    }
-                  }}
-                  className="relative text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-3 py-1 rounded-lg border border-white/20"
-                  aria-label="backend status"
-                  title="Backend status"
-                >
-                  Health
-                  <span className={(healthy === null ? "bg-gray-500" : healthy ? "bg-green-500" : "bg-red-500") + " absolute -top-1 -right-1 w-2 h-2 rounded-full"} />
-                </button>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-white/40">
+                    Backend: {backendUrl.replace(/^https?:\/\//, '').replace(/:\d+$/, '')}
+                  </span>
+                  <button
+                    onClick={async () => {
+                      try {
+                        const r = await fetch(`${getBackendUrl()}/health`, { cache: "no-store" });
+                        const d = await r.json();
+                        setHealthy(d.status === "ok");
+                        if (d.status !== "ok") alert(`Backend issue: ${d.error || "unknown"}`);
+                        else alert("Backend is healthy!");
+                      } catch (e: unknown) {
+                        setHealthy(false);
+                        const errorMessage = e instanceof Error ? e.message : 'Unknown error occurred';
+                        alert(`Backend issue: ${errorMessage}`);
+                      }
+                    }}
+                    className="relative text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-3 py-1 rounded-lg border border-white/20"
+                    aria-label="backend status"
+                    title="Backend status"
+                  >
+                    Health
+                    <span className={(healthy === null ? "bg-gray-500" : healthy ? "bg-green-500" : "bg-red-500") + " absolute -top-1 -right-1 w-2 h-2 rounded-full"} />
+                  </button>
+                </div>
               </div>
             </div>
           </div>

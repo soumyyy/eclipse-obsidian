@@ -109,7 +109,11 @@ cors_origins = {
     "http://localhost:3000", 
     "http://127.0.0.1:3000",
     "http://192.168.29.112:3000",  # Your mobile device
-    "http://0.0.0.0:3000"
+    "http://0.0.0.0:3000",
+    # Add your Vercel domain here
+    "https://eclipse-obsidian.vercel.app",  
+    # Allow all Vercel subdomains (be more specific in production)
+    "https://*.vercel.app",
 }
 app.add_middleware(
     CORSMiddleware,
