@@ -6,7 +6,8 @@ import {
   MessageSquare, 
   Trash2, 
   X,
-  ChevronRight
+  ChevronRight,
+  Sparkles
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getBackendUrl } from "@/utils/config";
@@ -25,17 +26,19 @@ interface ChatSidebarProps {
   onClose: () => void;
   onSessionSelect: (sessionId: string) => void;
   currentSessionId?: string;
+  refreshTrigger?: number;
 }
 
 export default function ChatSidebar({ 
   isOpen, 
   onClose, 
   onSessionSelect, 
-  currentSessionId 
+  currentSessionId,
+  refreshTrigger
 }: ChatSidebarProps) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [isCreating, setIsCreating] = useState(false);
-  const [newSessionTitle, setNewSessionTitle] = useState("");
+  const [debugMode, setDebugMode] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -48,12 +51,19 @@ export default function ChatSidebar({
     }
   }, [isOpen]);
 
-      const fetchSessions = async () => {
-      try {
-        const response = await fetch(`${getBackendUrl()}/api/sessions?user_id=soumya`, {
-          headers: {
-            'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
-          }
+  // Refresh sessions when refreshTrigger changes
+  useEffect(() => {
+    if (refreshTrigger && refreshTrigger > 0) {
+      fetchSessions();
+    }
+  }, [refreshTrigger]);
+
+  const fetchSessions = async () => {
+    try {
+      const response = await fetch(`${getBackendUrl()}/api/sessions?user_id=soumya`, {
+        headers: {
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
+        }
       });
       if (response.ok) {
         const data = await response.json();
@@ -65,9 +75,12 @@ export default function ChatSidebar({
   };
 
   const createNewSession = async () => {
-    if (!newSessionTitle.trim()) return;
-    
     try {
+      setIsCreating(true);
+      
+      // Generate a default title that will be updated after first message
+      const defaultTitle = `New Chat ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+      
       const response = await fetch(`${getBackendUrl()}/api/sessions`, {
         method: "POST",
         headers: {
@@ -76,20 +89,20 @@ export default function ChatSidebar({
         },
         body: JSON.stringify({
           user_id: "soumya",
-          title: newSessionTitle.trim()
+          title: defaultTitle
         })
       });
       
       if (response.ok) {
         const data = await response.json();
         setSessions(prev => [data.session, ...prev]);
-        setNewSessionTitle("");
-        setIsCreating(false);
         onSessionSelect(data.session.id);
         onClose(); // Close sidebar after creating
       }
     } catch (error) {
       console.error("Error creating session:", error);
+    } finally {
+      setIsCreating(false);
     }
   };
 
@@ -148,14 +161,47 @@ export default function ChatSidebar({
     try {
       const date = new Date(dateString);
       const now = new Date();
-      const diffTime = Math.abs(now.getTime() - date.getTime());
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
       
-      if (diffDays === 1) return "Yesterday";
-      if (diffDays < 7) return `${diffDays} days ago`;
-      if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks ago`;
+      // Get the start of today (midnight) in local timezone for accurate day comparison
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+      
+      // Get the start of the session date (midnight) in local timezone
+      const sessionDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+      
+      // Calculate the difference in days
+      const diffTime = today.getTime() - sessionDate.getTime();
+      const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+      
+      if (diffDays === 0) {
+        // Same day - show time
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      } else if (diffDays === 1) {
+        return "Yesterday";
+      } else if (diffDays === -1) {
+        return "Tomorrow";
+      } else if (diffDays > 1 && diffDays < 7) {
+        return `${diffDays} days ago`;
+      } else if (diffDays > 7 && diffDays < 30) {
+        const weeks = Math.floor(diffDays / 7);
+        return `${weeks} week${weeks === 1 ? '' : 's'} ago`;
+      } else if (diffDays > 30 && diffDays < 365) {
+        const months = Math.floor(diffDays / 30);
+        return `${months} month${months === 1 ? '' : 's'} ago`;
+      } else if (diffDays >= 365) {
+        const years = Math.floor(diffDays / 365);
+        return `${years} year${years === 1 ? '' : 's'} ago`;
+      } else if (diffDays < 0 && diffDays > -7) {
+        return `In ${Math.abs(diffDays)} day${Math.abs(diffDays) === 1 ? '' : 's'}`;
+      } else if (diffDays < 0) {
+        return date.toLocaleDateString();
+      }
+      
+      // Fallback for edge cases
       return date.toLocaleDateString();
-    } catch {
+    } catch (error) {
+      console.error("Error formatting date:", error, dateString);
       return "Unknown";
     }
   };
@@ -166,115 +212,148 @@ export default function ChatSidebar({
 
   return (
     <>
-      {/* Backdrop */}
+      {/* Backdrop with subtle blur */}
       {isOpen && (
         <div 
-          className="fixed inset-0 bg-black/20 backdrop-blur-sm z-40"
+          className="fixed inset-0 bg-black/20 backdrop-blur-sm z-40 transition-opacity duration-300"
           onClick={onClose}
         />
       )}
       
-      {/* Sidebar */}
-      <div className={`fixed left-0 top-0 h-full w-80 bg-black/90 backdrop-blur-xl border-r border-gray-600 transform transition-transform duration-300 ease-in-out z-50 ${
-        isOpen ? 'translate-x-0' : '-translate-x-full'
+      {/* Floating Sidebar with Apple-like minimalism */}
+      <div className={`fixed left-4 top-4 h-[calc(100vh-2rem)] w-80 bg-black/95 backdrop-blur-2xl border border-white/10 rounded-3xl shadow-2xl transform transition-all duration-500 ease-out z-50 ${
+        isOpen 
+          ? 'translate-x-0 opacity-100 scale-100' 
+          : '-translate-x-full opacity-0 scale-95'
       }`}>
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-gray-600">
-          <h2 className="text-lg font-semibold text-white">Chats</h2>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onClose}
-            className="h-8 w-8 p-0 hover:bg-gray-800 text-gray-300 hover:text-white"
-          >
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
-
-        {/* New Chat Button */}
-        <div className="p-4">
-          <Button
-            onClick={() => setIsCreating(true)}
-            className="w-full bg-gray-700 hover:bg-gray-600 text-white font-medium py-2.5 rounded-lg transition-colors border border-gray-600"
-          >
-            <Plus className="h-4 w-4 mr-2" />
-            New Chat
-          </Button>
-        </div>
-
-        {/* Create New Session Input */}
-        {isCreating && (
-          <div className="px-4 pb-4">
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={newSessionTitle}
-                onChange={(e) => setNewSessionTitle(e.target.value)}
-                placeholder="Enter chat title..."
-                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') createNewSession();
-                  if (e.key === 'Escape') {
-                    setIsCreating(false);
-                    setNewSessionTitle("");
-                  }
-                }}
-                autoFocus
-              />
-              <Button
-                onClick={createNewSession}
-                size="sm"
-                className="bg-gray-900 hover:bg-gray-800 text-white px-3 py-2 rounded-lg"
-              >
-                Create
-              </Button>
+        {/* Header with minimal styling */}
+        <div className="flex items-center justify-between p-6 border-b border-white/10">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-white/10 rounded-2xl">
+              <MessageSquare className="h-5 w-5 text-white/80" />
             </div>
+            <h2 className="text-xl font-semibold text-white">Chats</h2>
           </div>
-        )}
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setDebugMode(!debugMode)}
+              className="h-8 w-8 p-0 hover:bg-white/10 text-white/40 hover:text-white/60 rounded-xl transition-all duration-200 text-xs"
+              title="Toggle debug mode"
+            >
+              {debugMode ? "🔍" : "⚙️"}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onClose}
+              className="h-10 w-10 p-0 hover:bg-white/10 text-white/60 hover:text-white rounded-2xl transition-all duration-200"
+            >
+              <X className="h-5 w-5" />
+            </Button>
+          </div>
+        </div>
 
-        {/* Sessions List */}
-        <div className="flex-1 overflow-y-auto">
+        {/* New Chat Button with Apple-like design */}
+        <div className="p-6">
+          <Button
+            onClick={createNewSession}
+            disabled={isCreating}
+            className="w-full bg-white/10 hover:bg-white/20 text-white font-medium py-4 rounded-2xl transition-all duration-300 border border-white/20 shadow-lg hover:shadow-xl transform hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isCreating ? (
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                Creating...
+              </div>
+            ) : (
+              <>
+                <Plus className="h-5 w-5 mr-3" />
+                New Chat
+              </>
+            )}
+          </Button>
+        </div>
+
+        {/* Sessions List with clean spacing */}
+        <div className="flex-1 overflow-y-auto px-3 pb-3">
           {sessions.length === 0 ? (
-            <div className="p-4 text-center text-gray-500">
-              <MessageSquare className="h-8 w-8 mx-auto mb-2 text-gray-400" />
-              <p className="text-sm">No chats yet</p>
-              <p className="text-xs">Start a new conversation</p>
+            <div className="p-8 text-center text-white/50">
+              <div className="p-4 bg-white/5 rounded-2xl mb-4 inline-block">
+                <MessageSquare className="h-8 w-8 text-white/30" />
+              </div>
+              <p className="text-sm font-medium mb-1">No chats yet</p>
+              <p className="text-xs text-white/40">Start a new conversation to begin</p>
             </div>
           ) : (
-            <div className="space-y-1 p-2">
+            <div className="space-y-2">
               {sessions.map((session) => (
                 <div
                   key={session.id}
-                  className={`group relative flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-colors ${
+                  className={`group relative flex items-center gap-3 p-4 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] ${
                     currentSessionId === session.id
-                      ? 'bg-gray-700 text-white border border-gray-500'
-                      : 'hover:bg-gray-800 text-gray-300 hover:text-white'
+                      ? 'bg-white/10 text-white border border-white/20 shadow-lg'
+                      : 'hover:bg-white/5 text-white/80 hover:text-white border border-transparent hover:border-white/10'
                   }`}
                   onClick={() => {
                     onSessionSelect(session.id);
                     onClose();
                   }}
                 >
-                  <MessageSquare className="h-4 w-4 text-gray-500 flex-shrink-0" />
+                  <div className={`p-2 rounded-xl transition-colors ${
+                    currentSessionId === session.id 
+                      ? 'bg-white/20' 
+                      : 'bg-white/10 group-hover:bg-white/15'
+                  }`}>
+                    <MessageSquare className="h-4 w-4 text-white/60" />
+                  </div>
                   
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between mb-1">
                       <h3 className="font-medium text-sm truncate">
                         {session.title}
                       </h3>
-                      <span className="text-xs text-gray-400">
-                        {formatDate(session.created_at)}
-                      </span>
+                      <div className="flex flex-col items-end">
+                        <span 
+                          className="text-xs text-white/50 cursor-help"
+                          title={`Created: ${new Date(session.created_at).toLocaleString()}`}
+                        >
+                          {formatDate(session.created_at)}
+                        </span>
+                        {/* Show exact date for older chats */}
+                        {(() => {
+                          const date = new Date(session.created_at);
+                          const now = new Date();
+                          const diffTime = now.getTime() - date.getTime();
+                          const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+                          
+                          if (debugMode) {
+                            return (
+                              <span className="text-xs text-white/30 font-mono">
+                                {session.created_at}
+                              </span>
+                            );
+                          } else if (diffDays > 7) {
+                            return (
+                              <span className="text-xs text-white/30">
+                                {date.toLocaleDateString()}
+                              </span>
+                            );
+                          }
+                          return null;
+                        })()}
+                      </div>
                     </div>
                     
                     {session.last_message && (
-                      <p className="text-xs text-gray-500 truncate mt-1">
+                      <p className="text-xs text-white/50 truncate">
                         {truncateMessage(session.last_message)}
                       </p>
                     )}
                   </div>
 
-                  {/* Delete Button */}
+                  {/* Enhanced Delete Button with better visibility */}
                   <Button
                     variant="ghost"
                     size="sm"
@@ -282,16 +361,19 @@ export default function ChatSidebar({
                       e.stopPropagation();
                       deleteSession(session.id);
                     }}
-                    className="h-6 w-6 p-0 opacity-80 group-hover:opacity-100 hover:bg-gray-700 text-gray-400 hover:text-red-400 transition-all"
+                    className="h-8 w-8 p-0 opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-white/60 hover:text-red-400 transition-all duration-200 rounded-xl"
                     aria-label="Delete chat"
                     title="Delete chat"
                   >
-                    <Trash2 className="h-3 w-3" />
+                    <Trash2 className="h-4 w-4" />
                   </Button>
 
                   {/* Active Indicator */}
                   {currentSessionId === session.id && (
-                    <ChevronRight className="h-4 w-4 text-white flex-shrink-0" />
+                    <div className="flex items-center gap-1 text-white/80">
+                      <div className="w-2 h-2 bg-white/80 rounded-full animate-pulse" />
+                      <ChevronRight className="h-4 w-4" />
+                    </div>
                   )}
                 </div>
               ))}
@@ -299,10 +381,12 @@ export default function ChatSidebar({
           )}
         </div>
 
-        {/* Footer */}
-        <div className="border-t border-gray-600 p-4">
-          <div className="text-xs text-gray-500 text-center">
-            Eclipse AI Assistant
+        {/* Footer with minimal branding */}
+        <div className="border-t border-white/10 p-6 bg-white/5 rounded-b-3xl">
+          <div className="flex items-center justify-center gap-2 text-sm text-white/50">
+            <Sparkles className="h-4 w-4 text-white/40" />
+            <span className="font-medium">Eclipse AI</span>
+            <span className="text-xs text-white/40">Assistant</span>
           </div>
         </div>
       </div>

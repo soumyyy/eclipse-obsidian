@@ -89,6 +89,52 @@ export default function Home() {
   const [creatingSession, setCreatingSession] = useState(false);
 
   const [healthy, setHealthy] = useState<boolean | null>(null);
+  const [refreshSidebar, setRefreshSidebar] = useState(0);
+
+  // Function to update session title based on first message
+  const updateSessionTitle = async (sessionId: string, firstMessage: string) => {
+    try {
+      // Generate a smart title from the first message
+      let title = firstMessage.trim();
+      
+      // Clean up the message for better titles
+      title = title.replace(/^[?!.,;:]+/, '').trim(); // Remove leading punctuation
+      title = title.replace(/\s+/g, ' '); // Normalize whitespace
+      
+      // Truncate if too long
+      if (title.length > 50) {
+        title = title.substring(0, 47) + "...";
+      }
+      
+      // If it's very short or empty, use a fallback
+      if (title.length < 3) {
+        title = `Chat about ${firstMessage.length > 0 ? firstMessage : 'something'}`;
+      }
+      
+      // Capitalize first letter
+      title = title.charAt(0).toUpperCase() + title.slice(1);
+      
+      const response = await fetch(`${getBackendUrl()}/api/sessions/${sessionId}/title`, {
+        method: "POST",
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
+        },
+        body: JSON.stringify({
+          user_id: "soumya",
+          title: title
+        })
+      });
+      
+      if (response.ok) {
+        console.log("Session title updated to:", title);
+        // Trigger a refresh of the sidebar
+        setRefreshSidebar(prev => prev + 1);
+      }
+    } catch (error) {
+      console.error("Error updating session title:", error);
+    }
+  };
 
   // Auto-refresh sessions every 30 seconds for multi-device sync
   useEffect(() => {
@@ -120,6 +166,9 @@ export default function Home() {
       
       const newSessionId = `session_${dateStr}_${timeSlot}_${Date.now()}`;
       
+      // Generate a default title that will be updated after first message
+      const defaultTitle = `New Chat ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+      
       const response = await fetch(`${getBackendUrl()}/api/sessions`, {
         method: "POST",
         headers: {
@@ -128,7 +177,7 @@ export default function Home() {
         },
         body: JSON.stringify({
           user_id: "soumya",
-          title: "New Chat",
+          title: defaultTitle,
           session_id: newSessionId
         })
       });
@@ -244,6 +293,11 @@ export default function Home() {
     
     setMessages(prev => [...prev, userMessageObj]);
     setInput("");
+    
+    // Update session title if this is the first message
+    if (messages.length === 0) {
+      updateSessionTitle(activeSession, userMessage);
+    }
     
     // Upload files first if any
     if (pendingFiles.length > 0) {
@@ -504,17 +558,17 @@ export default function Home() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-black via-gray-900 to-black text-white">
+    <div className="min-h-screen bg-black text-white">
       {/* Main Content */}
       <div className="transition-all duration-300">
         {/* Header */}
-        <header className="sticky top-0 z-10 bg-black/80 backdrop-blur-xl border-b border-gray-600 shadow-2xl">
+        <header className="sticky top-0 z-10 bg-black/90 backdrop-blur-xl border-b border-white/10 shadow-lg">
           <div className="max-w-7xl mx-auto px-6 py-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-6">
                 <button
                   onClick={() => setChatSidebarOpen(true)}
-                  className="p-2 rounded-full text-gray-400 hover:text-white hover:bg-gray-700 transition-colors border border-gray-600"
+                  className="p-2 rounded-full text-white/60 hover:text-white hover:bg-white/10 transition-colors border border-white/20"
                   title="Open chats"
                   aria-label="Open chats"
                 >
@@ -524,13 +578,13 @@ export default function Home() {
                 <div className="flex items-center gap-4">
                   <button
                     onClick={() => setShowTasks(!showTasks)}
-                    className="text-sm text-gray-300 hover:text-white transition-colors hover:bg-gray-700 px-3 py-1 rounded-lg"
+                    className="text-sm text-white/70 hover:text-white transition-colors hover:bg-white/10 px-3 py-1 rounded-lg"
                   >
                     Tasks
                   </button>
                   <a
                     href="/memories"
-                    className="text-sm text-gray-300 hover:text-white transition-colors hover:bg-gray-700 px-3 py-1 rounded-lg"
+                    className="text-sm text-white/70 hover:text-white transition-colors hover:bg-white/10 px-3 py-1 rounded-lg"
                   >
                     Memories
                   </a>
@@ -557,7 +611,7 @@ export default function Home() {
                       alert(`Reindex error: ${errorMessage}`);
                     }
                   }}
-                  className="text-xs text-gray-400 hover:text-white transition-colors hover:bg-gray-700 px-3 py-1 rounded-lg border border-gray-600"
+                  className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-3 py-1 rounded-lg border border-white/20"
                 >
                   Reindex
                 </button>
@@ -575,7 +629,7 @@ export default function Home() {
                       alert(`Backend issue: ${errorMessage}`);
                     }
                   }}
-                  className="relative text-xs text-gray-400 hover:text-white transition-colors hover:bg-gray-700 px-3 py-1 rounded-lg border border-gray-600"
+                  className="relative text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-3 py-1 rounded-lg border border-white/20"
                   aria-label="backend status"
                   title="Backend status"
                 >
@@ -599,7 +653,7 @@ export default function Home() {
         {/* Floating input bar */}
         <div className="fixed bottom-4 inset-x-0 px-3 pointer-events-none">
           <form onSubmit={(e) => { e.preventDefault(); sendMessage(input); }} className="max-w-5xl mx-auto pointer-events-auto">
-            <div className="relative rounded-2xl border border-gray-600 bg-black/80 backdrop-blur-xl shadow-2xl flex items-center gap-2 px-3 py-2">
+            <div className="relative rounded-2xl border border-white/20 bg-black/80 backdrop-blur-xl shadow-2xl flex items-center gap-2 px-3 py-2">
               {loading && <div className="loading-underline" />}
               <button
                 type="button"
@@ -607,7 +661,7 @@ export default function Home() {
                 title="Upload files"
                 disabled={loading}
                 onClick={() => fileInputRef.current?.click()}
-                className="inline-flex items-center justify-center w-8 h-8 rounded-full text-gray-400 hover:text-white hover:bg-gray-700 transition-colors border border-gray-600"
+                className="inline-flex items-center justify-center w-8 h-8 rounded-full text-white/60 hover:text-white hover:bg-white/10 transition-colors border border-white/20"
               >
                 <Plus size={18} />
               </button>
@@ -615,9 +669,9 @@ export default function Home() {
               {pendingFiles.length > 0 && (
                 <div className="flex flex-wrap gap-2 mb-3">
                   {pendingFiles.map((f, i) => (
-                    <div key={i} className="inline-flex items-center gap-2 text-sm bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 backdrop-blur-sm">
+                    <div key={i} className="inline-flex items-center gap-2 text-sm bg-white/10 border border-white/20 rounded-lg px-3 py-2 backdrop-blur-sm">
                       <FileIcon file={f} />
-                      <span className="text-gray-200 font-medium">{f.name}</span>
+                      <span className="text-white/90 font-medium">{f.name}</span>
                       <button
                         type="button"
                         aria-label={`Remove ${f.name}`}
@@ -654,10 +708,10 @@ export default function Home() {
                 placeholder={loading ? "Waiting for reply..." : creatingSession ? "Creating new chat..." : "Hey soumya"}
                 ref={inputRef}
                 rows={1}
-                className="w-full bg-transparent text-white px-3 py-2 pr-12 outline-none placeholder:text-gray-500 resize-none overflow-y-auto"
+                className="w-full bg-transparent text-white px-3 py-2 pr-12 outline-none placeholder:text-white/40 resize-none overflow-y-auto"
               />
               {transcribing && (
-                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-gray-400">
+                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-white/60">
                   Transcribing{transcribingDots}
                 </span>
               )}
@@ -691,7 +745,7 @@ export default function Home() {
                     startRecording();
                   }
                 }}
-                className={"inline-flex items-center justify-center w-8 h-8 rounded-full transition-all duration-200 " + (recording ? "bg-gray-700 text-white border border-gray-600 animate-pulse" : "text-gray-400 hover:text-white hover:bg-gray-700 border border-gray-600")}
+                className={"inline-flex items-center justify-center w-8 h-8 rounded-full transition-all duration-200 " + (recording ? "bg-white/20 text-white border border-white/30 animate-pulse" : "text-white/60 hover:text-white hover:bg-white/10 border border-white/20")}
               >
                 <Mic size={18} />
               </button>
@@ -700,7 +754,7 @@ export default function Home() {
                 disabled={loading}
                 aria-label="Send"
                 title="Send"
-                className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-gray-700 text-white disabled:opacity-50 hover:bg-gray-600 border border-gray-600 shadow-lg"
+                className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-white/20 text-white disabled:opacity-50 hover:bg-white/30 border border-white/30 shadow-lg"
               >
                 <SendHorizonal size={18} />
               </button>
@@ -718,6 +772,7 @@ export default function Home() {
          onClose={() => setChatSidebarOpen(false)}
          onSessionSelect={handleSessionSelect}
          currentSessionId={activeSession}
+         refreshTrigger={refreshSidebar}
        />
     </div>
   );

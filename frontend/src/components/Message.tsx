@@ -70,8 +70,8 @@ export default function Message({ role, content, formatted, attachments }: Messa
         className={[
           "relative max-w-[85%] rounded-2xl border shadow-sm",
           isUser
-            ? "px-4 sm:px-5 py-3.5 border-cyan-500/30 bg-cyan-950/20" 
-            : "px-4 sm:px-5 py-4 border-white/10 bg-gray-900/25 animate-slide-in-up",
+            ? "px-4 sm:px-5 py-3.5 border-white/20 bg-white/5" 
+            : "px-4 sm:px-5 py-4 border-white/10 bg-white/5 animate-slide-in-up",
         ].join(" ")}
       >
         {isUser ? (
@@ -81,7 +81,7 @@ export default function Message({ role, content, formatted, attachments }: Messa
                 {attachments.map((file, i) => (
                   <div key={i} className="inline-flex items-center gap-2 text-sm bg-white/5 border border-white/20 rounded-lg px-3 py-2 backdrop-blur-sm">
                     <FileIcon file={file} />
-                    <span className="text-neutral-100 font-medium">{file.name}</span>
+                    <span className="text-white/90 font-medium">{file.name}</span>
                   </div>
                 ))}
               </div>
@@ -102,7 +102,7 @@ export default function Message({ role, content, formatted, attachments }: Messa
             ]}
             components={{
               h1: ({children}) => (
-                <h1 className="text-xl font-bold text-white mb-3 mt-4 first:mt-0 border-b border-gray-700 pb-2">{children}</h1>
+                <h1 className="text-xl font-bold text-white mb-3 mt-4 first:mt-0 border-b border-slate-700 pb-2">{children}</h1>
               ),
               h2: ({children}) => (
                 <h2 className="text-lg font-bold text-white mb-3 mt-6 first:mt-0">{children}</h2>
@@ -115,7 +115,7 @@ export default function Message({ role, content, formatted, attachments }: Messa
               ),
               
               p: ({children}) => (
-                <p className="text-sm text-gray-100 mb-3 leading-relaxed">
+                <p className="text-sm text-white/90 mb-3 leading-relaxed">
                   {children}
                 </p>
               ),
@@ -126,7 +126,7 @@ export default function Message({ role, content, formatted, attachments }: Messa
                 </strong>
               ),
               em: ({children}) => (
-                <em className="italic text-gray-200">
+                <em className="italic text-white/80">
                   {children}
                 </em>
               ),
@@ -142,7 +142,7 @@ export default function Message({ role, content, formatted, attachments }: Messa
                 </ol>
               ),
               li: ({children}) => (
-                <li className="text-sm text-gray-100">
+                <li className="text-sm text-white/90">
                   {children}
                 </li>
               ),
@@ -150,7 +150,7 @@ export default function Message({ role, content, formatted, attachments }: Messa
               a: ({children, href}) => (
                 <a 
                   href={href} 
-                  className="text-cyan-400 hover:text-cyan-300 underline" 
+                  className="text-white/70 hover:text-white/90 underline" 
                   target="_blank" 
                   rel="noopener noreferrer"
                 >
@@ -159,7 +159,7 @@ export default function Message({ role, content, formatted, attachments }: Messa
               ),
               
               blockquote: ({children}) => (
-                <blockquote className="border-l-4 border-cyan-500/50 pl-4 my-3 italic text-gray-300">
+                <blockquote className="border-l-4 border-white/20 pl-4 my-3 italic text-white/70">
                   {children}
                 </blockquote>
               ),
@@ -170,26 +170,26 @@ export default function Message({ role, content, formatted, attachments }: Messa
                   const codeString = String(children);
                   return (
                     <div className="my-4 rounded-xl bg-black/60 border border-white/10">
-                      <div className="px-3 py-1.5 bg-black/50 border-b border-white/10 text-xs text-gray-400 flex items-center justify-between">
+                      <div className="px-3 py-1.5 bg-black/50 border-b border-white/10 text-xs text-white/60 flex items-center justify-between">
                         <span className="uppercase tracking-wide opacity-70">{language}</span>
                         <button
                           type="button"
                           onClick={async () => { try { await navigator.clipboard.writeText(codeString); } catch {} }}
-                          className="px-2 py-0.5 rounded border border-white/10 text-gray-300 hover:text-white hover:bg-white/10"
+                          className="px-2 py-0.5 rounded border border-white/10 text-white/70 hover:text-white hover:bg-white/10"
                           aria-label="Copy code"
                         >
                           Copy
                         </button>
                       </div>
-                      <pre className="p-4 overflow-x-auto text-sm leading-relaxed"><code className="text-gray-100">{codeString}</code></pre>
+                      <pre className="p-4 overflow-x-auto text-sm leading-relaxed"><code className="text-white/90">{codeString}</code></pre>
                     </div>
                   );
                 }
-                return <code className="px-1.5 py-0.5 bg-black/40 rounded text-sm font-mono text-gray-200">{children}</code>;
+                return <code className="px-1.5 py-0.5 bg-white/10 rounded text-sm font-mono text-white/90">{children}</code>;
               },
               
               table: ({children}) => (
-                <div className="my-0 overflow-x-auto rounded-xl border border-gray-700/60 bg-gray-900/30 shadow-sm ring-1 ring-white/5 inline-block max-w-full">
+                <div className="my-0 overflow-x-auto rounded-xl border border-white/20 bg-white/5 shadow-sm ring-1 ring-white/5 inline-block max-w-full">
                   <table className="w-full border-separate border-spacing-0">
                     {children}
                   </table>
@@ -197,24 +197,24 @@ export default function Message({ role, content, formatted, attachments }: Messa
               ),
               
               th: ({children}) => (
-                <th className="!pl-3 !pr-6 py-2.5 bg-gray-800/70 supports-[backdrop-filter]:bg-gray-800/50 text-white font-semibold text-left text-sm whitespace-pre-wrap break-words align-top sticky -top-px z-10 border-b border-gray-700/60 first:rounded-tl-xl last:rounded-tr-xl">
+                <th className="!pl-3 !pr-6 py-2.5 bg-white/10 supports-[backdrop-filter]:bg-white/10 text-white font-semibold text-left text-sm whitespace-pre-wrap break-words align-top sticky -top-px z-10 border-b border-white/20 first:rounded-tl-xl last:rounded-tr-xl">
                   {children}
                 </th>
               ),
               
               td: ({children}) => (
-                <td className="!pl-3 !pr-6 py-2.5 text-gray-100 text-sm whitespace-pre-wrap break-words align-top border-b border-gray-700/50">
+                <td className="!pl-3 !pr-6 py-2.5 text-white/90 text-sm whitespace-pre-wrap break-words align-top border-b border-white/10">
                   {children}
                 </td>
               ),
               tbody: ({children}) => (
-                <tbody className="[&_tr:hover]:bg-gray-800/20">{children}</tbody>
+                <tbody className="[&_tr:hover]:bg-white/5">{children}</tbody>
               ),
               tr: ({children}) => (
-                <tr className="odd:bg-gray-900/30 transition-colors">{children}</tr>
+                <tr className="odd:bg-white/5 transition-colors">{children}</tr>
               ),
               
-              hr: () => <hr className="my-6 border-gray-600" />
+              hr: () => <hr className="my-6 border-white/20" />
             }}
           >
             {normalized}
