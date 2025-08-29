@@ -3,7 +3,7 @@ export const getBackendUrl = (): string => {
   // Check if we're in the browser
   if (typeof window === 'undefined') {
     // Server-side: use environment variable or default
-    return process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000';
+    return process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
   }
 
   // Client-side: check environment variable first
@@ -16,7 +16,15 @@ export const getBackendUrl = (): string => {
   
   // Development: localhost
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
-    return 'http://127.0.0.1:8000';
+    // Enhanced mobile detection: check screen width and user agent
+    const isMobile = window.innerWidth <= 768 || 
+                    /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    
+    if (isMobile) {
+      return 'http://192.168.29.112:8000';
+    }
+    // For desktop, use localhost
+    return 'http://localhost:8000';
   }
   
   // Production: Vercel deployment
@@ -32,7 +40,7 @@ export const getBackendUrl = (): string => {
   }
   
   // Fallback
-  return 'http://127.0.0.1:8000';
+  return 'http://localhost:8000';
 };
 
 export const getFrontendUrl = (): string => {

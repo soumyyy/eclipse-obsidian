@@ -10,6 +10,7 @@ This will be used in the next phase for:
 import os
 import redis
 from typing import Optional
+import json
 
 try:
     from upstash_redis import Redis as UpstashRedis
@@ -29,6 +30,11 @@ REDIS_URL = os.getenv("REDIS_URL")
 UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
 UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
 
+# TTLs and defaults
+SESSION_TTL_SECONDS = 3600
+CHAT_HISTORY_TTL_SECONDS = 86400 * 7
+CHAT_CACHE_TTL_SECONDS = 30
+
 # Redis client singleton (can be Redis or UpstashRedis)
 _redis_client: Optional[redis.Redis | UpstashRedis] = None
 
@@ -37,28 +43,14 @@ def get_redis_client() -> redis.Redis | UpstashRedis:
     global _redis_client
     
     if _redis_client is None:
-        # Debug: Print environment variables
-        print(f"Redis Config Debug:")
-        print(f"  UPSTASH_REDIS_REST_URL: {'SET' if UPSTASH_REDIS_REST_URL else 'NOT SET'}")
-        print(f"  UPSTASH_REDIS_REST_TOKEN: {'SET' if UPSTASH_REDIS_REST_TOKEN else 'NOT SET'}")
-        print(f"  REDIS_URL: {'SET' if REDIS_URL else 'NOT SET'}")
-        print(f"  REDIS_HOST: {REDIS_HOST}")
-        print(f"  REDIS_PORT: {REDIS_PORT}")
-        
         if UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN and UPSTASH_AVAILABLE:
-            print("Using official Upstash Redis client")
-            # The Upstash Redis client expects the REST URL directly
-            print(f"Upstash URL: {UPSTASH_REDIS_REST_URL}")
-            
             _redis_client = UpstashRedis(
                 url=UPSTASH_REDIS_REST_URL,
                 token=UPSTASH_REDIS_REST_TOKEN
             )
         elif REDIS_URL:
-            print("Using REDIS_URL")
             _redis_client = redis.from_url(REDIS_URL)
         else:
-            print(f"Using local Redis at {REDIS_HOST}:{REDIS_PORT}")
             _redis_client = redis.Redis(
                 host=REDIS_HOST,
                 port=REDIS_PORT,
@@ -72,10 +64,8 @@ def get_redis_client() -> redis.Redis | UpstashRedis:
         
         # Test connection
         try:
-            result = _redis_client.ping()
-            print(f"Redis connection established: {result}")
+            _redis_client.ping()
         except Exception as e:
-            print(f"Redis connection failed: {e}")
             _redis_client = None
             raise
     
@@ -128,90 +118,243 @@ class RedisKeys:
 class RedisOps:
     def __init__(self):
         self.client = get_redis_client()
+        # Detect Upstash client reliably and disable pipelines for it
+        try:
+            from upstash_redis import Redis as _UpstashRedis
+            self._is_upstash = isinstance(self.client, _UpstashRedis)
+        except Exception:
+            self._is_upstash = 'upstash' in str(getattr(self.client, 'url', '')).lower()
+        # Only use pipeline when truly supported (not Upstash)
+        self._has_pipeline = hasattr(self.client, 'pipeline') and not self._is_upstash
+    
+    def _safe_redis_operation(self, operation, *args, **kwargs):
+        """Safely execute Redis operation with Upstash compatibility"""
+        try:
+            if hasattr(self.client, operation):
+                method = getattr(self.client, operation)
+                return method(*args, **kwargs)
+            else:
+                # Fallback for unsupported operations
+                print(f"Warning: Operation {operation} not supported by Redis client")
+                return None
+        except Exception as e:
+            print(f"Warning: Redis operation {operation} failed: {e}")
+            return None
     
     # Session management
     def set_session_data(self, session_id: str, data: dict, expire: int = 3600):
         """Set session data with expiration (default 1 hour)"""
         key = RedisKeys.session_key(session_id)
-        self.client.setex(key, expire, str(data))
+        self._safe_redis_operation('setex', key, expire or SESSION_TTL_SECONDS, json.dumps(data))
     
     def get_session_data(self, session_id: str) -> Optional[dict]:
         """Get session data"""
         key = RedisKeys.session_key(session_id)
-        data = self.client.get(key)
-        return eval(data) if data else None
+        data = self._safe_redis_operation('get', key)
+        if not data:
+            return None
+        
+        try:
+            return json.loads(data)
+        except (json.JSONDecodeError, TypeError):
+            # Handle old data stored with str() format
+            try:
+                # Try to evaluate old format data
+                return eval(data)
+            except:
+                # If all else fails, return None
+                print(f"Warning: Could not parse session data for {session_id}")
+                return None
     
     def delete_session(self, session_id: str):
         """Delete session data"""
         key = RedisKeys.session_key(session_id)
-        self.client.delete(key)
+        self._safe_redis_operation('delete', key)
     
     # Chat history
     def store_chat_message(self, user_id: str, session_id: str, message: dict, max_messages: int = 100):
-        """Store chat message in Redis list"""
+        """Store chat message in Redis list using pipeline for better performance"""
         key = RedisKeys.chat_history_key(user_id, session_id)
-        self.client.lpush(key, str(message))
-        self.client.ltrim(key, 0, max_messages - 1)
-        self.client.expire(key, 86400 * 7)  # 7 days
+        
+        # Use pipeline when available, otherwise sequential ops
+        if self._has_pipeline:
+            with self.client.pipeline() as pipe:
+                pipe.lpush(key, json.dumps(message))
+                pipe.ltrim(key, 0, max_messages - 1)
+                pipe.expire(key, CHAT_HISTORY_TTL_SECONDS)
+                pipe.execute()
+        else:
+            # Fallback for Upstash Redis (no pipeline support)
+            self._safe_redis_operation('lpush', key, json.dumps(message))
+            self._safe_redis_operation('ltrim', key, 0, max_messages - 1)
+            self._safe_redis_operation('expire', key, CHAT_HISTORY_TTL_SECONDS)
     
     def get_chat_history(self, user_id: str, session_id: str, limit: int = 50) -> list:
-        """Get chat history from Redis"""
+        """Get chat history from Redis using pipeline for better performance"""
         key = RedisKeys.chat_history_key(user_id, session_id)
-        messages = self.client.lrange(key, 0, limit - 1)
+        
+        # Use pipeline when available, otherwise sequential ops
+        if self._has_pipeline:
+            with self.client.pipeline() as pipe:
+                pipe.lrange(key, 0, limit - 1)
+                pipe.expire(key, CHAT_HISTORY_TTL_SECONDS)
+                results = pipe.execute()
+            messages = results[0]
+        else:
+            # Fallback for Upstash Redis (no pipeline support)
+            messages = self._safe_redis_operation('lrange', key, 0, limit - 1)
+            self._safe_redis_operation('expire', key, CHAT_HISTORY_TTL_SECONDS)
+        
         # Reverse to get correct chronological order (user message first, then assistant)
-        return [eval(msg) for msg in reversed(messages)]
+        parsed_messages = []
+        for msg in reversed(messages):
+            try:
+                parsed_messages.append(json.loads(msg))
+            except (json.JSONDecodeError, TypeError):
+                # Handle old data stored with str() format
+                try:
+                    parsed_messages.append(eval(msg))
+                except:
+                    print(f"Warning: Could not parse message in chat history for {user_id}:{session_id}")
+                    continue
+        
+        return parsed_messages
+    
+    def get_chat_history_cached(self, user_id: str, session_id: str, limit: int = 50) -> list:
+        """Get chat history with Redis caching for ultra-fast access"""
+        cache_key = f"cache:{RedisKeys.chat_history_key(user_id, session_id)}:{limit}"
+        
+        # Try cache first (short TTL for chat history cache)
+        cached = self._safe_redis_operation('get', cache_key)
+        if cached:
+            return json.loads(cached)
+        
+        # Fetch from Redis if not cached
+        messages = self.get_chat_history(user_id, session_id, limit)
+        
+        # Cache the result briefly to smooth bursts
+        self._safe_redis_operation('setex', cache_key, CHAT_CACHE_TTL_SECONDS, json.dumps(messages))
+        return messages
     
     # Ephemeral files
     def store_ephemeral_files(self, session_id: str, files_data: dict, expire: int = 3600):
         """Store ephemeral files data"""
         key = RedisKeys.ephemeral_files_key(session_id)
-        self.client.setex(key, expire, str(files_data))
+        self._safe_redis_operation('setex', key, expire or SESSION_TTL_SECONDS, json.dumps(files_data))
     
     def get_ephemeral_files(self, session_id: str) -> Optional[dict]:
         """Get ephemeral files data"""
         key = RedisKeys.ephemeral_files_key(session_id)
-        data = self.client.get(key)
-        return eval(data) if data else None
+        data = self._safe_redis_operation('get', key)
+        if not data:
+            return None
+        
+        try:
+            return json.loads(data)
+        except (json.JSONDecodeError, TypeError):
+            # Handle old data stored with str() format
+            try:
+                return eval(data)
+            except:
+                print(f"Warning: Could not parse ephemeral files data for {session_id}")
+                return None
     
     # Memory consolidation queue
     def queue_memory_task(self, user_id: str, task_data: dict):
         """Queue memory consolidation task"""
-        self.client.lpush(RedisKeys.MEMORY_QUEUE, str({"user_id": user_id, **task_data}))
+        self._safe_redis_operation('lpush', RedisKeys.MEMORY_QUEUE, json.dumps({"user_id": user_id, **task_data}))
     
     def get_memory_task(self) -> Optional[dict]:
         """Get next memory consolidation task"""
-        task = self.client.rpop(RedisKeys.MEMORY_QUEUE)
-        return eval(task) if task else None
+        task = self._safe_redis_operation('rpop', RedisKeys.MEMORY_QUEUE)
+        if not task:
+            return None
+        
+        try:
+            return json.loads(task)
+        except (json.JSONDecodeError, TypeError):
+            # Handle old data stored with str() format
+            try:
+                return eval(task)
+            except:
+                print(f"Warning: Could not parse memory task data")
+                return None
     
     # User status
     def set_user_status(self, user_id: str, status: str, expire: int = 300):
         """Set user online status (5 min default)"""
         key = RedisKeys.user_status_key(user_id)
-        self.client.setex(key, expire, status)
+        self._safe_redis_operation('setex', key, expire or 300, status)
     
     def get_user_status(self, user_id: str) -> Optional[str]:
         """Get user online status"""
         key = RedisKeys.user_status_key(user_id)
-        return self.client.get(key)
+        return self._safe_redis_operation('get', key)
     
     def get_active_users(self) -> list:
         """Get list of active users"""
         pattern = f"{RedisKeys.USER_STATUS}*"
-        keys = self.client.keys(pattern)
-        return [key.replace(RedisKeys.USER_STATUS, "") for key in keys]
+        keys = self._safe_redis_operation('keys', pattern)
+        return [key.replace(RedisKeys.USER_STATUS, "") for key in keys] if keys else []
+    
+    def migrate_old_data_to_json(self, user_id: str = None):
+        """Migrate old data stored with str() format to JSON format"""
+        try:
+            if user_id:
+                # Migrate specific user's data
+                session_pattern = f"{RedisKeys.SESSION_PREFIX}*"
+                chat_pattern = f"{RedisKeys.CHAT_HISTORY_PREFIX}{user_id}:*"
+                
+                # Migrate sessions
+                session_keys = self._safe_redis_operation('keys', session_pattern)
+                if session_keys:
+                    for key in session_keys:
+                        try:
+                            data = self._safe_redis_operation('get', key)
+                            if data and not data.startswith('{'):
+                                # Old format data, convert to JSON
+                                parsed_data = eval(data)
+                                self._safe_redis_operation('setex', key, 3600, json.dumps(parsed_data))
+                                print(f"Migrated session data: {key}")
+                        except:
+                            continue
+                
+                # Migrate chat history
+                chat_keys = self._safe_redis_operation('keys', chat_pattern)
+                if chat_keys:
+                    for key in chat_keys:
+                        try:
+                            messages = self._safe_redis_operation('lrange', key, 0, -1)
+                            if messages and not messages[0].startswith('{'):
+                                # Old format messages, convert to JSON
+                                if self._has_pipeline:
+                                    with self.client.pipeline() as pipe:
+                                        pipe.delete(key)
+                                        for msg in messages:
+                                            try:
+                                                parsed_msg = eval(msg)
+                                                pipe.lpush(key, json.dumps(parsed_msg))
+                                            except:
+                                                continue
+                                        pipe.expire(key, CHAT_HISTORY_TTL_SECONDS)
+                                        pipe.execute()
+                                else:
+                                    # Fallback for Upstash Redis
+                                    self._safe_redis_operation('delete', key)
+                                    for msg in messages:
+                                        try:
+                                            parsed_msg = eval(msg)
+                                            self._safe_redis_operation('lpush', key, json.dumps(parsed_msg))
+                                        except:
+                                            continue
+                                    self._safe_redis_operation('expire', key, CHAT_HISTORY_TTL_SECONDS)
+                                print(f"Migrated chat history: {key}")
+                        except:
+                            continue
+            else:
+                print("Migration completed for specified user")
+                
+        except Exception as e:
+            print(f"Migration error: {e}")
 
-# Example usage (will be implemented in next phase)
-if __name__ == "__main__":
-    try:
-        redis_ops = RedisOps()
-        print("Redis operations initialized successfully")
-        
-        # Test basic operations
-        redis_ops.set_user_status("test_user", "online")
-        status = redis_ops.get_user_status("test_user")
-        print(f"Test user status: {status}")
-        
-    except Exception as e:
-        print(f"Redis test failed: {e}")
-    finally:
-        close_redis_client()
+

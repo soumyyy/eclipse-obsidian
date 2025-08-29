@@ -295,8 +295,12 @@ def _ensure_json_and_markdown(raw: str, prefer_table: bool = False, prefer_compa
             return ans, render_markdown(ans, prefer_table=prefer_table, prefer_compact=prefer_compact)
         except Exception:
             # Fallback: keep structure; minimal cleanup only
-            from formatting import fallback_sanitize as _fb
-            return None, _fb(raw)
+            try:
+                from formatting import fallback_sanitize as _fb
+                return None, _fb(raw)
+            except Exception:
+                # Ultimate fallback: return raw content
+                return None, raw
 
 # ----------------- Retriever singleton -----------------
 _retriever: Optional[RAG] = None
@@ -835,7 +839,11 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
     # Compact response if the user message looks like a short greeting/question
     # Only compact for pure greetings; otherwise keep detail
     prefer_compact = bool(re.fullmatch(r"\s*(hi|hello|hey|yo|hola)[.!?]?\s*", (payload.message or ""), flags=re.I))
-    _, formatted_md = _ensure_json_and_markdown(reply, prefer_table=prefer_table, prefer_compact=prefer_compact)
+    result = _ensure_json_and_markdown(reply, prefer_table=prefer_table, prefer_compact=prefer_compact)
+    if isinstance(result, tuple) and len(result) == 2:
+        _, formatted_md = result
+    else:
+        formatted_md = reply
     _append_history(payload.user_id, "user", payload.message)
     _append_history(payload.user_id, "assistant", formatted_md or reply)
 
@@ -963,6 +971,15 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                 full = "".join(buffer)
                 _append_history(payload.user_id, "user", payload.message)
                 
+                # Format to JSON-first → markdown (always do this for response)
+                prefer_table = bool(re.search(r"\b(table|tabulate|comparison|vs)\b", payload.message, flags=re.I))
+                prefer_compact = bool(re.fullmatch(r"\s*(hi|hello|hey|yo|hola)[.!?]?\s*", (payload.message or ""), flags=re.I))
+                result = _ensure_json_and_markdown(full, prefer_table=prefer_table, prefer_compact=prefer_compact)
+                if isinstance(result, tuple) and len(result) == 2:
+                    ans, formatted_md = result
+                else:
+                    ans, formatted_md = None, full
+                
                 # Store messages in Redis if session_id is provided
                 if payload.session_id:
                     try:
@@ -976,10 +993,6 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                         }
                         redis_ops.store_chat_message(payload.user_id, payload.session_id, user_message)
                         
-                        # Format to JSON-first → markdown and store formatted in history
-                        prefer_table = bool(re.search(r"\b(table|tabulate|comparison|vs)\b", payload.message, flags=re.I))
-                        prefer_compact = bool(re.fullmatch(r"\s*(hi|hello|hey|yo|hola)[.!?]?\s*", (payload.message or ""), flags=re.I))
-                        ans, formatted_md = _ensure_json_and_markdown(full, prefer_table=prefer_table, prefer_compact=prefer_compact)
                         _append_history(payload.user_id, "assistant", formatted_md or full)
                         
                         # Store assistant message
