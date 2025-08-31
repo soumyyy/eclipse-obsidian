@@ -362,7 +362,7 @@ export default function Home() {
     setLoading(true);
     
     try {
-      const response = await apiChatStream(new Blob([JSON.stringify({ user_id: "soumya", message: userMessage, session_id: activeSession })], { type: 'application/json' }).stream());
+      const response = await apiChatStream({ user_id: "soumya", message: userMessage, session_id: activeSession });
       
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);

@@ -21,11 +21,12 @@ export async function apiChat(body: ChatPayload) {
   return res.json();
 }
 
-export function apiChatStream(body: ReadableStream | null) {
+export function apiChatStream(payload: ChatPayload) {
   return fetch(`/api/chat/stream`, {
     method: "POST",
-    // forward body; headers added server-side by route proxy
-    body,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    cache: "no-store",
   });
 }
 
