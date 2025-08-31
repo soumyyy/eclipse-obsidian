@@ -3,6 +3,7 @@ import { useState, useRef, useEffect } from "react";
 import Message from "@/components/Message";
 import Sound from "@/components/Sound";
 import { getBackendUrl } from "@/utils/config";
+import { apiChatStream } from "@/lib/api";
 
 import HUD from "@/components/HUD";
 import TasksPanel from "@/components/TasksPanel";
@@ -361,18 +362,7 @@ export default function Home() {
     setLoading(true);
     
     try {
-      const response = await fetch(`${getBackendUrl()}/chat/stream`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
-        },
-        body: JSON.stringify({
-          user_id: "soumya",
-          message: userMessage,
-          session_id: activeSession
-        })
-      });
+      const response = await apiChatStream(new Blob([JSON.stringify({ user_id: "soumya", message: userMessage, session_id: activeSession })], { type: 'application/json' }).stream());
       
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);

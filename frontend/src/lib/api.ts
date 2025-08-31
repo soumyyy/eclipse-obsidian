@@ -8,7 +8,9 @@ const authHeaders = (): Record<string, string> => {
   return headers;
 };
 
-export async function apiChat(body: any) {
+export type ChatPayload = { user_id: string; message: string; session_id?: string; make_note?: string; save_task?: string; save_fact?: string };
+
+export async function apiChat(body: ChatPayload) {
   const res = await fetch(`/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -62,29 +64,19 @@ export async function apiTaskComplete(taskId: number, userId = "soumya") {
 }
 
 export async function apiSessionsList(userId = "soumya") {
-  const res = await fetch(`${backendUrl}/api/sessions?user_id=${encodeURIComponent(userId)}`, {
-    headers: { ...authHeaders() },
-    cache: "no-store",
-  });
+  const res = await fetch(`/api/sessions?user_id=${encodeURIComponent(userId)}`, { cache: "no-store" });
   if (!res.ok) throw new Error("sessions failed");
   return res.json();
 }
 
 export async function apiSessionCreate(title = "New Chat", userId = "soumya") {
-  const res = await fetch(`${backendUrl}/api/sessions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ user_id: userId, title }),
-  });
+  const res = await fetch(`/api/sessions`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: userId, title }) });
   if (!res.ok) throw new Error("session create failed");
   return res.json();
 }
 
 export async function apiSessionDelete(sessionId: string, userId = "soumya") {
-  const res = await fetch(`${backendUrl}/api/sessions/${sessionId}`, {
-    method: "DELETE",
-    headers: { ...authHeaders() },
-  });
+  const res = await fetch(`/api/sessions/${sessionId}`, { method: "DELETE" });
   if (!res.ok) throw new Error("session delete failed");
   return res.json();
 }
