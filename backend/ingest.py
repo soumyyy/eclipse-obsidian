@@ -26,6 +26,7 @@ import numpy as np
 import faiss
 
 from github_fetch import fetch_repo_snapshot  # <- we rely on this
+from memory import ensure_db, create_mem_item  # Phase 1 structured store
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = str(BASE_DIR / "data")
@@ -200,13 +201,14 @@ def save_artifacts(index: faiss.Index, records: List[Dict]):
 
 # ---------- ingest helpers ----------
 
-def ingest_from_dir(root: str, model_name: str = "sentence-transformers/all-MiniLM-L6-v2", batch: int = 64, target: int = 800, overlap: int = 100):
+def ingest_from_dir(root: str, model_name: str = "sentence-transformers/all-MiniLM-L6-v2", batch: int = 64, target: int = 800, overlap: int = 100, user_id: str = "soumya"):
     """
     Build FAISS artifacts from a local directory containing Markdown files.
     Used by the web app to ingest either a GitHub snapshot (already extracted)
     or a local vault path.
     """
-    records, texts = scan_and_chunk(root, target_size=target, overlap=overlap)
+    ensure_db()
+    records, texts = scan_and_chunk(root, target_size=target, overlap=overlap, user_id=user_id)
     if not records:
         print("Nothing to index.")
         return
@@ -217,7 +219,7 @@ def ingest_from_dir(root: str, model_name: str = "sentence-transformers/all-Mini
 
 # ---------- ingest pipeline (CLI: always GitHub) ----------
 
-def scan_and_chunk(root: str, target_size=800, overlap=100) -> Tuple[List[Dict], List[str]]:
+def scan_and_chunk(root: str, target_size=800, overlap=100, user_id: str = "soumya") -> Tuple[List[Dict], List[str]]:
     """
     Returns (records, raw_chunks)
     record = {id, path, relpath, chunk_id, text}
@@ -241,7 +243,17 @@ def scan_and_chunk(root: str, target_size=800, overlap=100) -> Tuple[List[Dict],
             cleaned = clean_markdown(raw)
             chunks = smart_chunk(cleaned, target_size=target_size, overlap=overlap)
             for ci, ch in enumerate(chunks):
-                rid = f"{rel}::chunk{ci}"
+                # Create corresponding structured memory row; UUID v4 id is generated inside
+                mem_id = create_mem_item(
+                    user_id=user_id,
+                    kind="semantic",
+                    title=os.path.splitext(os.path.basename(rel))[0],
+                    body=ch,
+                    source=rel,
+                    tags=None,
+                    pinned=0,
+                )
+                rid = mem_id
                 records.append({
                     "id": rid,
                     "path": path,

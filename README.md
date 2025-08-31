@@ -17,7 +17,7 @@ This is my personal AI companion that I developed to:
 ## **System Architecture**
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+┌─────────────────┐ 
 │   My Frontend   │    ┌─────────────────┐    ┌─────────────────┐
 │   (Next.js)     │◄──►│   My Backend    │◄──►│   My Data Layer │
 │                 │    │   (FastAPI)     │    │   (Redis +      │

@@ -1,5 +1,5 @@
 # memory.py
-import os, sqlite3, time
+import os, sqlite3, time, uuid
 from pathlib import Path
 from typing import List, Tuple, Optional
 
@@ -60,6 +60,39 @@ CREATE TABLE IF NOT EXISTS pending_memories (
   extra      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_pending_user_ts ON pending_memories(user_id, ts DESC);
+
+-- Structured memory (Phase 1)
+CREATE TABLE IF NOT EXISTS mem_item (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL,
+  kind       TEXT NOT NULL,            -- semantic | episode | task | note | other
+  title      TEXT,
+  body       TEXT,
+  source     TEXT,
+  tags       TEXT,                     -- comma-separated tags
+  pinned     INTEGER DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mem_item_user_kind ON mem_item(user_id, kind);
+CREATE INDEX IF NOT EXISTS idx_mem_item_user_updated ON mem_item(user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS mem_signal (
+  mem_id     TEXT PRIMARY KEY REFERENCES mem_item(id) ON DELETE CASCADE,
+  last_seen  INTEGER,
+  good_votes INTEGER DEFAULT 0,
+  bad_votes  INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS session_summary (
+  session_id TEXT NOT NULL,
+  turn_no    INTEGER NOT NULL,
+  tokens     INTEGER NOT NULL,
+  summary    TEXT NOT NULL,
+  salient_facts_hash TEXT,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(session_id, turn_no)
+);
 """
 
 def ensure_db(path: str = DB_PATH) -> None:
@@ -70,6 +103,115 @@ def ensure_db(path: str = DB_PATH) -> None:
         # executescript is idempotent for our schema
         cur.executescript(SCHEMA)
         con.commit()
+    finally:
+        con.close()
+
+# ------------- Phase 1 helpers (structured memory) -------------
+
+def _now_ts() -> int:
+    return int(time.time())
+
+def generate_mem_id() -> str:
+    """Generate a new UUID v4 string for mem_item ids."""
+    return str(uuid.uuid4())
+
+def upsert_mem_item(user_id: str, item_id: str, kind: str, title: str | None, body: str | None, source: str | None, tags: str | None, pinned: int = 0) -> str:
+    if not (user_id and item_id and kind):
+        raise ValueError("user_id, item_id, kind are required")
+    ts = _now_ts()
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cur = con.cursor()
+        cur.execute("SELECT 1 FROM mem_item WHERE id=? AND user_id=?", (item_id, user_id))
+        exists = cur.fetchone() is not None
+        if exists:
+            cur.execute(
+                "UPDATE mem_item SET kind=?, title=?, body=?, source=?, tags=?, pinned=?, updated_at=? WHERE id=? AND user_id=?",
+                (kind, title, body, source, tags, int(bool(pinned)), ts, item_id, user_id),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO mem_item(id, user_id, kind, title, body, source, tags, pinned, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (item_id, user_id, kind, title, body, source, tags, int(bool(pinned)), ts, ts),
+            )
+        con.commit()
+        return item_id
+    finally:
+        con.close()
+
+def create_mem_item(user_id: str, kind: str, title: str | None = None, body: str | None = None, source: str | None = None, tags: str | None = None, pinned: int = 0, item_id: str | None = None) -> str:
+    """Convenience helper: generate a UUID v4 id (unless provided) and upsert the mem_item.
+    Returns the id used.
+    """
+    mid = item_id or generate_mem_id()
+    return upsert_mem_item(user_id=user_id, item_id=mid, kind=kind, title=title, body=body, source=source, tags=tags, pinned=pinned)
+
+def list_mem_items(user_id: str, kind: str | None = None, tags_like: str | None = None, updated_after: int | None = None, limit: int = 100):
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cur = con.cursor()
+        sql = "SELECT id, kind, title, body, source, tags, pinned, created_at, updated_at FROM mem_item WHERE user_id=?"
+        params = [user_id]
+        if kind:
+            sql += " AND kind=?"; params.append(kind)
+        if tags_like:
+            sql += " AND tags LIKE ?"; params.append(f"%{tags_like}%")
+        if updated_after:
+            sql += " AND updated_at>=?"; params.append(updated_after)
+        sql += " ORDER BY updated_at DESC LIMIT ?"; params.append(limit)
+        cur.execute(sql, tuple(params))
+        rows = cur.fetchall()
+        return [
+            {
+                "id": r[0], "kind": r[1], "title": r[2], "body": r[3], "source": r[4],
+                "tags": r[5], "pinned": int(r[6]) == 1, "created_at": r[7], "updated_at": r[8]
+            }
+            for r in rows
+        ]
+    finally:
+        con.close()
+
+def upsert_signal(mem_id: str, last_seen: int | None = None, good_delta: int = 0, bad_delta: int = 0) -> None:
+    last_seen = last_seen or _now_ts()
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cur = con.cursor()
+        cur.execute("SELECT good_votes, bad_votes FROM mem_signal WHERE mem_id=?", (mem_id,))
+        row = cur.fetchone()
+        if row:
+            new_good = int(row[0]) + int(good_delta)
+            new_bad = int(row[1]) + int(bad_delta)
+            cur.execute("UPDATE mem_signal SET last_seen=?, good_votes=?, bad_votes=? WHERE mem_id=?", (last_seen, new_good, new_bad, mem_id))
+        else:
+            cur.execute("INSERT INTO mem_signal(mem_id, last_seen, good_votes, bad_votes) VALUES(?,?,?,?)", (mem_id, last_seen, max(0, good_delta), max(0, bad_delta)))
+        con.commit()
+    finally:
+        con.close()
+
+def upsert_session_summary(session_id: str, turn_no: int, tokens: int, summary: str, salient_facts_hash: str | None = None) -> None:
+    if not (session_id and isinstance(turn_no, int)):
+        raise ValueError("session_id and turn_no required")
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cur = con.cursor()
+        cur.execute(
+            "INSERT OR REPLACE INTO session_summary(session_id, turn_no, tokens, summary, salient_facts_hash, created_at) VALUES(?,?,?,?,?,?)",
+            (session_id, turn_no, tokens, summary, salient_facts_hash, _now_ts()),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+def get_session_summaries(session_id: str, limit: int = 20):
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cur = con.cursor()
+        cur.execute("SELECT turn_no, tokens, summary, salient_facts_hash, created_at FROM session_summary WHERE session_id=? ORDER BY turn_no DESC LIMIT ?", (session_id, limit))
+        rows = cur.fetchall()
+        return [
+            {"turn_no": r[0], "tokens": r[1], "summary": r[2], "salient_facts_hash": r[3], "created_at": r[4]}
+            for r in rows
+        ]
     finally:
         con.close()
 

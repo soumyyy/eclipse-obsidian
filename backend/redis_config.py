@@ -11,6 +11,7 @@ import os
 import redis
 from typing import Optional
 import json
+import orjson
 
 try:
     from upstash_redis import Redis as UpstashRedis
@@ -33,7 +34,14 @@ UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
 # TTLs and defaults
 SESSION_TTL_SECONDS = 3600
 CHAT_HISTORY_TTL_SECONDS = 86400 * 7
-CHAT_CACHE_TTL_SECONDS = 30
+CHAT_CACHE_TTL_SECONDS = 120
+
+def _json_dumps(obj) -> str:
+    # orjson returns bytes; ensure str for redis client using decode_responses
+    return orjson.dumps(obj, option=orjson.OPT_NON_STR_KEYS).decode()
+
+def _json_loads(data: str):
+    return orjson.loads(data)
 
 # Redis client singleton (can be Redis or UpstashRedis)
 _redis_client: Optional[redis.Redis | UpstashRedis] = None
@@ -145,7 +153,7 @@ class RedisOps:
     def set_session_data(self, session_id: str, data: dict, expire: int = 3600):
         """Set session data with expiration (default 1 hour)"""
         key = RedisKeys.session_key(session_id)
-        self._safe_redis_operation('setex', key, expire or SESSION_TTL_SECONDS, json.dumps(data))
+        self._safe_redis_operation('setex', key, expire or SESSION_TTL_SECONDS, _json_dumps(data))
     
     def get_session_data(self, session_id: str) -> Optional[dict]:
         """Get session data"""
@@ -155,7 +163,7 @@ class RedisOps:
             return None
         
         try:
-            return json.loads(data)
+            return _json_loads(data)
         except (json.JSONDecodeError, TypeError):
             # Handle old data stored with str() format
             try:
@@ -179,13 +187,13 @@ class RedisOps:
         # Use pipeline when available, otherwise sequential ops
         if self._has_pipeline:
             with self.client.pipeline() as pipe:
-                pipe.lpush(key, json.dumps(message))
+                pipe.lpush(key, _json_dumps(message))
                 pipe.ltrim(key, 0, max_messages - 1)
                 pipe.expire(key, CHAT_HISTORY_TTL_SECONDS)
                 pipe.execute()
         else:
             # Fallback for Upstash Redis (no pipeline support)
-            self._safe_redis_operation('lpush', key, json.dumps(message))
+            self._safe_redis_operation('lpush', key, _json_dumps(message))
             self._safe_redis_operation('ltrim', key, 0, max_messages - 1)
             self._safe_redis_operation('expire', key, CHAT_HISTORY_TTL_SECONDS)
     
@@ -209,7 +217,7 @@ class RedisOps:
         parsed_messages = []
         for msg in reversed(messages):
             try:
-                parsed_messages.append(json.loads(msg))
+                parsed_messages.append(_json_loads(msg))
             except (json.JSONDecodeError, TypeError):
                 # Handle old data stored with str() format
                 try:
@@ -227,20 +235,20 @@ class RedisOps:
         # Try cache first (short TTL for chat history cache)
         cached = self._safe_redis_operation('get', cache_key)
         if cached:
-            return json.loads(cached)
+            return _json_loads(cached)
         
         # Fetch from Redis if not cached
         messages = self.get_chat_history(user_id, session_id, limit)
         
         # Cache the result briefly to smooth bursts
-        self._safe_redis_operation('setex', cache_key, CHAT_CACHE_TTL_SECONDS, json.dumps(messages))
+        self._safe_redis_operation('setex', cache_key, CHAT_CACHE_TTL_SECONDS, _json_dumps(messages))
         return messages
     
     # Ephemeral files
     def store_ephemeral_files(self, session_id: str, files_data: dict, expire: int = 3600):
         """Store ephemeral files data"""
         key = RedisKeys.ephemeral_files_key(session_id)
-        self._safe_redis_operation('setex', key, expire or SESSION_TTL_SECONDS, json.dumps(files_data))
+        self._safe_redis_operation('setex', key, expire or SESSION_TTL_SECONDS, _json_dumps(files_data))
     
     def get_ephemeral_files(self, session_id: str) -> Optional[dict]:
         """Get ephemeral files data"""
@@ -250,7 +258,7 @@ class RedisOps:
             return None
         
         try:
-            return json.loads(data)
+            return _json_loads(data)
         except (json.JSONDecodeError, TypeError):
             # Handle old data stored with str() format
             try:
@@ -262,7 +270,7 @@ class RedisOps:
     # Memory consolidation queue
     def queue_memory_task(self, user_id: str, task_data: dict):
         """Queue memory consolidation task"""
-        self._safe_redis_operation('lpush', RedisKeys.MEMORY_QUEUE, json.dumps({"user_id": user_id, **task_data}))
+        self._safe_redis_operation('lpush', RedisKeys.MEMORY_QUEUE, _json_dumps({"user_id": user_id, **task_data}))
     
     def get_memory_task(self) -> Optional[dict]:
         """Get next memory consolidation task"""
@@ -271,7 +279,7 @@ class RedisOps:
             return None
         
         try:
-            return json.loads(task)
+            return _json_loads(task)
         except (json.JSONDecodeError, TypeError):
             # Handle old data stored with str() format
             try:
@@ -314,7 +322,7 @@ class RedisOps:
                             if data and not data.startswith('{'):
                                 # Old format data, convert to JSON
                                 parsed_data = eval(data)
-                                self._safe_redis_operation('setex', key, 3600, json.dumps(parsed_data))
+                                self._safe_redis_operation('setex', key, 3600, _json_dumps(parsed_data))
                                 print(f"Migrated session data: {key}")
                         except:
                             continue
@@ -333,7 +341,7 @@ class RedisOps:
                                         for msg in messages:
                                             try:
                                                 parsed_msg = eval(msg)
-                                                pipe.lpush(key, json.dumps(parsed_msg))
+                                                pipe.lpush(key, _json_dumps(parsed_msg))
                                             except:
                                                 continue
                                         pipe.expire(key, CHAT_HISTORY_TTL_SECONDS)
@@ -344,7 +352,7 @@ class RedisOps:
                                     for msg in messages:
                                         try:
                                             parsed_msg = eval(msg)
-                                            self._safe_redis_operation('lpush', key, json.dumps(parsed_msg))
+                                            self._safe_redis_operation('lpush', key, _json_dumps(parsed_msg))
                                         except:
                                             continue
                                     self._safe_redis_operation('expire', key, CHAT_HISTORY_TTL_SECONDS)

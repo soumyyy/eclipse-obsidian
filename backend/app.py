@@ -2,6 +2,7 @@
 import os, hmac, hashlib, shutil
 import io
 import json
+import orjson
 import numpy as np
 from pathlib import Path
 from dotenv import load_dotenv
@@ -26,7 +27,6 @@ from memory_extractor import extract_and_store_memories, run_memory_maintenance
 from redis_config import RedisOps, RedisKeys
 from llm_cerebras import cerebras_chat   # Cerebras chat wrapper
 from llm_cerebras import cerebras_chat_stream  # Cerebras streaming chat
-from memory_extractor import extract_and_store_memories
 from cot_utils import should_apply_cot, build_cot_hint, inject_cot_hint
 from formatting import JsonAnswer, Section, ensure_json_and_markdown, render_markdown, fallback_sanitize
 from bs4 import BeautifulSoup
@@ -85,7 +85,7 @@ def _escape_json_content(content: str) -> str:
 
 def _get_context_hash(hits: List[Dict], file_context: str) -> str:
     """Generate a hash of context for caching purposes"""
-    context_text = "".join([str(hit.get("content", "")) for hit in hits]) + file_context
+    context_text = "".join([str(hit.get("text", "")) for hit in hits]) + file_context
     return str(hash(context_text))[:16]  # Simple hash for now
 
 # ----------------- Config -----------------
@@ -128,7 +128,7 @@ app.add_middleware(GZipMiddleware, minimum_size=512)
 
 # ----------------- Models -----------------
 class ChatIn(BaseModel):
-    user_id: str = "local"
+    user_id: str = "soumya"
     message: str
     make_note: Optional[str] = None
     use_web: bool = False  # reserved, not used here
@@ -142,10 +142,6 @@ class ChatOut(BaseModel):
     tools_used: List[str] = []
 
 # --------- Structured JSON answer schema (for deterministic formatting) ---------
-class Table(BaseModel):
-    headers: List[str] = []
-    rows: List[List[str]] = []
-
 class Table(BaseModel):
     headers: List[str] = []
     rows: List[List[str]] = []
@@ -232,16 +228,20 @@ Quality Bar:
 You may use the provided CONTEXT, MEMORIES and UPLOADS to build the JSON content. If unsure, reflect that in a bullet.
 """
 
-def build_messages(user_id: str, user_msg: str, context: str, memories_text: str, uploads_info: Optional[str] = None):
+def build_messages(user_id: str, user_msg: str, context: str, memories_text: str, uploads_info: Optional[str] = None, extra_history: Optional[List[Dict]] = None):
     history = _get_history(user_id)
-    return [
+    base = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "system", "content": f"UPLOADS:\n{uploads_info or 'none'}"},
         {"role": "system", "content": f"MEMORIES:\n{memories_text or '(none)'}"},
         {"role": "system", "content": f"CONTEXT:\n{context or '(no retrieval hits)'}"},
         *history,
-        {"role": "user", "content": user_msg},
     ]
+    if extra_history:
+        # Append recent redis history (role/content dicts) before current user message
+        base.extend(extra_history)
+    base.append({"role": "user", "content": user_msg})
+    return base
 
 # ----------------- CoT helpers -----------------
 def should_apply_cot(user_msg: str) -> bool:
@@ -276,9 +276,18 @@ _render_markdown = None  # moved to formatting.py
 
 _fallback_sanitize = None  # moved to formatting.py
 
+_RX_TABLE = re.compile(r"\b(table|tabulate|comparison|vs)\b", flags=re.I)
+_RX_GREETING = re.compile(r"\s*(hi|hello|hey|yo|hola)[.!?]?\s*", flags=re.I)
+
+def _json_loads_fast(s: str):
+    try:
+        return orjson.loads(s)
+    except Exception:
+        return json.loads(s)
+
 def _ensure_json_and_markdown(raw: str, prefer_table: bool = False, prefer_compact: bool = False) -> Tuple[Optional[JsonAnswer], str]:
     try:
-        obj = json.loads(raw)
+        obj = _json_loads_fast(raw)
         ans = JsonAnswer(**obj)
         return ans, render_markdown(ans, prefer_table=prefer_table, prefer_compact=prefer_compact)
     except Exception:
@@ -290,7 +299,7 @@ def _ensure_json_and_markdown(raw: str, prefer_table: bool = False, prefer_compa
                 {"role": "user", "content": raw[:6000]},
             ]
             fixed = cerebras_chat(repair_prompt, temperature=0.0, max_tokens=1000)
-            obj = json.loads(fixed)
+            obj = _json_loads_fast(fixed)
             ans = JsonAnswer(**obj)
             return ans, render_markdown(ans, prefer_table=prefer_table, prefer_compact=prefer_compact)
         except Exception:
@@ -413,6 +422,68 @@ def _ephemeral_recent(session_id: Optional[str], max_items: int = 3) -> List[Dic
     store = EPHEMERAL_SESSIONS[session_id]
     recent: List[Dict[str, str]] = store.get("recent", [])  # type: ignore
     return list(recent[-max_items:])
+
+# ----------------- Intent capture (auto tasks/notes) -----------------
+def _auto_capture_intents(user_id: str, text: str) -> None:
+    """Create tasks/notes based on natural phrasing like 'remind me to', 'take a note', etc."""
+    try:
+        from memory import add_task as _add_task, add_memory as _add_memory
+    except Exception:
+        return
+
+    line = (text or "").strip()
+    if not line:
+        return
+
+    created_any = False
+
+    # Task patterns (ordered)
+    task_patterns = [
+        re.compile(r"^\s*(?:remind(?:\s+me)?\s+to)\s+(.+)$", re.I),
+        re.compile(r"^\s*(?:create|add|make)\s+(?:a\s+)?(?:task|todo)[:,-]?\s+(.+)$", re.I),
+        re.compile(r"^\s*(?:todo|task)[:,-]?\s+(.+)$", re.I),
+        re.compile(r"\bfollow[- ]?up\s+on\s+(.+)$", re.I),
+    ]
+    for rx in task_patterns:
+        m = rx.search(line)
+        if m and m.group(1).strip():
+            try:
+                _add_task(user_id, m.group(1).strip())
+                created_any = True
+                break
+            except Exception:
+                pass
+
+    # Note patterns (only if not already created a task)
+    if not created_any:
+        note_patterns = [
+            re.compile(r"^\s*(?:please\s+)?(?:take\s+a\s+)?note(?:\s+(?:this|that))?[:,-]?\s*(.+)$", re.I),
+            re.compile(r"^\s*note\s*[:,-]?\s*(.+)$", re.I),
+            re.compile(r"^\s*remember\s+(?:that\s+)?(.+)$", re.I),
+        ]
+        for rx in note_patterns:
+            m = rx.search(line)
+            if m and m.group(1).strip():
+                try:
+                    _add_memory(user_id, m.group(1).strip(), mtype="note")
+                    created_any = True
+                    break
+                except Exception:
+                    pass
+
+    # Last-resort light heuristic: if the message starts with verbs like 'remind', 'todo', 'task', 'note'
+    if not created_any:
+        if re.match(r"^\s*(remind|todo|task|note)\b", line, re.I):
+            head = re.match(r"^\s*(remind\s+me\s+to|remind|todo|task|note)\b[:,-]?\s*(.*)$", line, re.I)
+            if head and head.group(2).strip():
+                payload = head.group(2).strip()
+                try:
+                    if head.group(1).lower().startswith("note"):
+                        _add_memory(user_id, payload, mtype="note")
+                    else:
+                        _add_task(user_id, payload)
+                except Exception:
+                    pass
 
 # ----------------- Semantic memory retrieval (on-the-fly) -----------------
 def _semantic_memory_retrieve(user_id: str, query: str, limit: int = 5):
@@ -714,11 +785,11 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
     # Retrieve context from FAISS + ephemeral + semantic memories
     try:
         retriever = get_retriever()
-        # Query expansion across variants + RRF
-        variants = _expand_queries(payload.message) or [payload.message]
+        # Query expansion across variants + RRF (trim to reduce latency)
+        variants = (_expand_queries(payload.message) or [payload.message])[:3]
         dense_lists: List[List[Dict]] = []
         for vq in variants[:6]:
-            _, hlist = retriever.build_context(vq)
+            _, hlist = retriever.build_context(vq, user_id=payload.user_id)
             dense_lists.append(hlist)
         hits = _rrf_merge(dense_lists, top_k=5)
         mem_sem_hits = _semantic_memory_retrieve(payload.user_id, payload.message, limit=5)
@@ -780,8 +851,13 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Retriever not ready: {e}. Run `python ingest.py`.") from e
 
-    # Recall memories (defensive formatting)
-    mems = recall_memories(payload.user_id, limit=6)
+    # Recall memories (defensive formatting) — include both legacy and structured items
+    mems = recall_memories("soumya", limit=6)
+    try:
+        from memory import list_mem_items
+        structured = list_mem_items("soumya", kind=None, limit=6)
+    except Exception:
+        structured = []
     
     # Get recent conversation history for better context
     recent_history = _get_history(payload.user_id)
@@ -811,7 +887,20 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
         # Fallback
         return f"- {str(r)}"
 
-    memories_text = "\n".join(_fmt_mem_row(r) for r in (mems or []))
+    mem_lines = [_fmt_mem_row(r) for r in (mems or [])]
+    # Add structured items as simple bullets: (kind) title — first 160 chars of body
+    for it in structured:
+        try:
+            title = (it.get("title") or "").strip()
+            body = (it.get("body") or "").strip()
+            kind = (it.get("kind") or "note").strip()
+            snippet = (body[:160] + ("…" if len(body) > 160 else "")) if body else ""
+            line = f"- ({kind}) {title}: {snippet}".strip()
+            if line:
+                mem_lines.append(line)
+        except Exception:
+            continue
+    memories_text = "\n".join(mem_lines)
     if conversation_context:
         memories_text = memories_text + conversation_context
 
@@ -829,9 +918,27 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
         except Exception:
             uploads_info = "present"
     
-    messages = build_messages(payload.user_id, payload.message, context, memories_text, uploads_info)
+    # Pull recent Redis history for this session (if any) to improve follow-ups
+    recent_session_history = []
+    try:
+        if payload.session_id:
+            redis_ops = RedisOps()
+            rh = redis_ops.get_chat_history(payload.user_id, payload.session_id, limit=6)
+            # keep last 4 messages (2 turns) and map to role/content
+            for it in rh[-4:]:
+                recent_session_history.append({"role": it.get("role", "user"), "content": it.get("content", "")})
+    except Exception:
+        recent_session_history = []
+
+    messages = build_messages(payload.user_id, payload.message, context, memories_text, uploads_info, extra_history=recent_session_history)
     if should_apply_cot(payload.message):
         messages = inject_cot_hint(messages, build_cot_hint())
+    # Auto-intent capture from the user's latest message
+    try:
+        _auto_capture_intents(payload.user_id, payload.message)
+    except Exception:
+        pass
+
     reply = cerebras_chat(messages, temperature=0.3, max_tokens=2000)
     # Try to coerce to JSON-first answer and render deterministic markdown
     # Fix word-boundary: single backslash in raw regex literal
@@ -846,6 +953,16 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
         formatted_md = reply
     _append_history(payload.user_id, "user", payload.message)
     _append_history(payload.user_id, "assistant", formatted_md or reply)
+    # Persist to Redis when session_id present so follow-ups get proper context
+    try:
+        if payload.session_id:
+            redis_ops = RedisOps()
+            user_msg = {"role": "user", "content": payload.message, "timestamp": datetime.utcnow().isoformat() + "Z"}
+            asst_msg = {"role": "assistant", "content": formatted_md or reply, "timestamp": datetime.utcnow().isoformat() + "Z"}
+            redis_ops.store_chat_message(payload.user_id, payload.session_id, user_msg)
+            redis_ops.store_chat_message(payload.user_id, payload.session_id, asst_msg)
+    except Exception:
+        pass
 
     # Optional: store a quick memory
     if payload.make_note:
@@ -876,10 +993,10 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
 
     try:
         retriever = get_retriever()
-        variants = _expand_queries(payload.message) or [payload.message]
+        variants = (_expand_queries(payload.message) or [payload.message])[:3]
         dense_lists: List[List[Dict]] = []
         for vq in variants[:6]:
-            _, hlist = retriever.build_context(vq)
+            _, hlist = retriever.build_context(vq, user_id=payload.user_id)
             dense_lists.append(hlist)
         hits = _rrf_merge(dense_lists, top_k=5)
         mem_sem_hits = _semantic_memory_retrieve(payload.user_id, payload.message, limit=5)
@@ -909,7 +1026,8 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
         # Build more natural context
         context_parts = []
         if all_hits:
-          context_parts.append("Relevant information:\n" + "\n\n".join(f"From {hit.get('path', 'memory')}:\n{hit.get('content', '')}" for hit in all_hits))
+          # use 'text' (RAG returns 'text'), not 'content'
+          context_parts.append("Relevant information:\n" + "\n\n".join(f"From {hit.get('path', 'memory')}:\n{hit.get('text', '')}" for hit in all_hits))
         if file_context:
           context_parts.append(file_context)
         
@@ -970,6 +1088,10 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
             try:
                 full = "".join(buffer)
                 _append_history(payload.user_id, "user", payload.message)
+                try:
+                    _auto_capture_intents(payload.user_id, payload.message)
+                except Exception:
+                    pass
                 
                 # Format to JSON-first → markdown (always do this for response)
                 prefer_table = bool(re.search(r"\b(table|tabulate|comparison|vs)\b", payload.message, flags=re.I))
@@ -1008,6 +1130,18 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                         
                     except Exception as e:
                         print(f"Error storing messages in Redis: {e}")
+
+                # Create tasks if requested (parity with non-stream endpoint)
+                try:
+                    if payload.save_task and payload.save_task.strip():
+                        add_task(payload.user_id, payload.save_task.strip())
+                    else:
+                        # Lightweight detector: if user intentionally writes a task prefix
+                        m = re.match(r"\s*(task:|todo:)\s*(.+)$", payload.message, flags=re.I)
+                        if m and m.group(2).strip():
+                            add_task(payload.user_id, m.group(2).strip())
+                except Exception as e:
+                    print(f"Task creation skipped: {e}")
                 
                 # Emit final formatted markdown with proper escaping
                 final_content = _escape_json_content(formatted_md or full)
