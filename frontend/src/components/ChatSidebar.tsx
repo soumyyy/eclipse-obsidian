@@ -89,7 +89,7 @@ export default function ChatSidebar({
     if (!confirm("Are you sure you want to delete this chat?")) return;
     
     try {
-      await apiSessionDelete(sessionId, "soumya");
+      await apiSessionDelete(sessionId);
       setSessions(prev => prev.filter(s => s.id !== sessionId));
       if (currentSessionId === sessionId) {
         const newSession = await createDefaultSession();

@@ -17,8 +17,6 @@ export async function POST(req: Request) {
       },
       body: JSON.stringify(json),
       cache: 'no-store',
-      // @ts-ignore
-      next: { revalidate: 0 },
     });
 
     // If upstream failed, pass through error text to help debug

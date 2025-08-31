@@ -83,7 +83,7 @@ export async function apiSessionCreate(title = "New Chat", userId = "soumya") {
   return res.json();
 }
 
-export async function apiSessionDelete(sessionId: string, userId = "soumya") {
+export async function apiSessionDelete(sessionId: string) {
   const res = await fetch(`${backendUrl}/api/sessions/${sessionId}`, { method: "DELETE", headers: { ...authHeaders() } });
   if (!res.ok) throw new Error("session delete failed");
   return res.json();
