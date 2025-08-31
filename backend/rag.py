@@ -149,15 +149,15 @@ class RAG:
             self._doc_text_map = None
 
     def _ensure_reranker(self):
-        # TEMPORARILY DISABLED: Skip re-ranker to test memory issues
-        self._reranker = None
-        return
         if self._reranker is not None:
             return
         try:
-            model_name = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base")
+            # Use a lightweight re-ranker that fits in 2GB VPS
+            # ms-marco-MiniLM-L-6-v2 is only ~90MB vs 500MB+ for bge-reranker-base
+            model_name = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
             self._reranker = CrossEncoder(model_name)
-        except Exception:
+        except Exception as e:
+            print(f"Failed to load re-ranker: {e}")
             self._reranker = None
 
     def retrieve(self, query: str, user_id: str | None = None):
@@ -220,8 +220,12 @@ class RAG:
         rrf: dict[str, dict] = {}
 
         for rank, h in enumerate(dense_hits, start=1):
-            if allowed_ids is not None and h.get("id") not in allowed_ids:
-                continue
+            # Allow FAISS results even if not in allowed_ids (they're from your knowledge base)
+            # Only filter if we have a specific user_id constraint
+            if allowed_ids is not None and user_id and h.get("id") not in allowed_ids:
+                # Still allow FAISS docs that don't have user-specific IDs
+                if h.get("id") and not h.get("path"):
+                    continue
             key = h.get("id") or h.get("path")
             if not key:
                 key = f"dense::{rank}"
@@ -244,8 +248,8 @@ class RAG:
 
         merged = list(rrf.values())
         merged.sort(key=lambda x: x.get("score", 0.0), reverse=True)
-        # Filter out very low relevance results
-        filtered = [h for h in merged if h.get("score", 0.0) > 0.01]
+        # Filter out very low relevance results - be more lenient without re-ranker
+        filtered = [h for h in merged if h.get("score", 0.0) > 0.001]
 
         # Cross-encoder rerank on top candidates for better precision
         try:
