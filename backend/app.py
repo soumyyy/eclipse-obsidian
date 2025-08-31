@@ -1011,6 +1011,8 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
         buffer = []
         last_ping = time.time()
         try:
+            # Immediately send a small startup event so clients don't see empty bodies
+            yield "data: {\"type\":\"start\"}\n\n"
             for chunk in cerebras_chat_stream(messages, temperature=0.3, max_tokens=2000):
                 if chunk:
                     buffer.append(chunk)

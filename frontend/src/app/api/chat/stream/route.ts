@@ -25,11 +25,12 @@ export async function POST(req: Request) {
     }
 
     const headers = new Headers();
-    headers.set("Content-Type", "text/event-stream");
+    headers.set("Content-Type", "text/event-stream; charset=utf-8");
     headers.set("Cache-Control", "no-cache, no-transform");
     headers.set("Connection", "keep-alive");
     headers.set("X-Accel-Buffering", "no");
-    return new Response(upstream.body, { status: upstream.status, headers });
+    headers.set("Transfer-Encoding", "chunked");
+    return new Response(upstream.body, { status: 200, headers });
   } catch {
     return new Response(JSON.stringify({ error: "Failed to connect to backend" }), { 
       status: 500,
