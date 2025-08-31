@@ -68,16 +68,17 @@ def get_retriever():
 
 # ---------- embedder + factory that returns (retriever, embed_fn) ----------
 
-def load_embedder(name: str = "sentence-transformers/all-MiniLM-L6-v2"):
+def load_embedder(name: str = "sentence-transformers/all-mpnet-base-v2"):
     """
     Shared sentence-transformers embedder.
+    Upgraded to all-mpnet-base-v2 for better semantic understanding (768 dims, ~420MB)
     """
     return SentenceTransformer(name)
 
 def make_faiss_retriever(
     index_path: str = INDEX_PATH,
     docs_path: str  = DOCS_PATH,
-    model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
+    model_name: str = "sentence-transformers/all-mpnet-base-v2",
 ):
     """
     Returns (retriever, embed_fn) suitable for constructing RAG(retriever, embed_fn).
@@ -152,9 +153,9 @@ class RAG:
         if self._reranker is not None:
             return
         try:
-            # Use a lightweight re-ranker that fits in 2GB VPS
-            # ms-marco-MiniLM-L-6-v2 is only ~90MB vs 500MB+ for bge-reranker-base
-            model_name = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+            # Upgraded re-ranker for better ranking quality
+            # ms-marco-MiniLM-L-12-v2 is ~130MB, better than L-6-v2 but still fits in 2GB VPS
+            model_name = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-12-v2")
             self._reranker = CrossEncoder(model_name)
         except Exception as e:
             print(f"Failed to load re-ranker: {e}")
