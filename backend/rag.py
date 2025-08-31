@@ -149,6 +149,9 @@ class RAG:
             self._doc_text_map = None
 
     def _ensure_reranker(self):
+        # TEMPORARILY DISABLED: Skip re-ranker to test memory issues
+        self._reranker = None
+        return
         if self._reranker is not None:
             return
         try:

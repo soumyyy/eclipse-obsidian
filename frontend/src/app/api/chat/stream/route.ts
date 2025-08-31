@@ -1,5 +1,8 @@
 import { getBackendUrl } from "@/utils/config";
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: Request) {
   const backendUrl = getBackendUrl();
   const token = process.env.NEXT_PUBLIC_BACKEND_TOKEN || process.env.BACKEND_API_KEY || process.env.BACKEND_TOKEN;
@@ -13,6 +16,9 @@ export async function POST(req: Request) {
         ...(token ? { "X-API-Key": token } : {}) 
       },
       body: JSON.stringify(json),
+      cache: 'no-store',
+      // @ts-ignore
+      next: { revalidate: 0 },
     });
 
     // If upstream failed, pass through error text to help debug
