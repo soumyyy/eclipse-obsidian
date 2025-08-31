@@ -14,7 +14,16 @@ export async function POST(req: Request) {
       },
       body: JSON.stringify(json),
     });
-    
+
+    // If upstream failed, pass through error text to help debug
+    if (!upstream.ok) {
+      const errText = await upstream.text().catch(() => "");
+      return new Response(errText || JSON.stringify({ error: `upstream ${upstream.status}` }), {
+        status: upstream.status,
+        headers: { "Content-Type": "text/plain" }
+      });
+    }
+
     const headers = new Headers();
     headers.set("Content-Type", "text/event-stream");
     headers.set("Cache-Control", "no-cache, no-transform");

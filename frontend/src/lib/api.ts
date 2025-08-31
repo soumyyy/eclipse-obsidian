@@ -65,19 +65,26 @@ export async function apiTaskComplete(taskId: number, userId = "soumya") {
 }
 
 export async function apiSessionsList(userId = "soumya") {
-  const res = await fetch(`/api/sessions?user_id=${encodeURIComponent(userId)}`, { cache: "no-store" });
+  const res = await fetch(`${backendUrl}/api/sessions?user_id=${encodeURIComponent(userId)}`, {
+    headers: { ...authHeaders() },
+    cache: "no-store",
+  });
   if (!res.ok) throw new Error("sessions failed");
   return res.json();
 }
 
 export async function apiSessionCreate(title = "New Chat", userId = "soumya") {
-  const res = await fetch(`/api/sessions`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: userId, title }) });
+  const res = await fetch(`${backendUrl}/api/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ user_id: userId, title })
+  });
   if (!res.ok) throw new Error("session create failed");
   return res.json();
 }
 
 export async function apiSessionDelete(sessionId: string, userId = "soumya") {
-  const res = await fetch(`/api/sessions/${sessionId}`, { method: "DELETE" });
+  const res = await fetch(`${backendUrl}/api/sessions/${sessionId}`, { method: "DELETE", headers: { ...authHeaders() } });
   if (!res.ok) throw new Error("session delete failed");
   return res.json();
 }
