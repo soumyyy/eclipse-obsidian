@@ -10,6 +10,7 @@ openai==1.54.0
 sentence-transformers==2.7.0
 faiss-cpu==1.7.4
 fastembed==0.2.0
+rank-bm25==0.2.2
 
 # Data processing
 numpy==1.26.4
@@ -31,3 +32,4 @@ dateparser==1.2.0
 redis==5.0.1
 upstash-redis==1.0.0
 email-validator==2.2.0
+orjson==3.10.7

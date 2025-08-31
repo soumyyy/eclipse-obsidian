@@ -8,6 +8,7 @@ This will be used in the next phase for:
 """
 
 import os
+import ast
 import redis
 from typing import Optional
 import json
@@ -42,6 +43,21 @@ def _json_dumps(obj) -> str:
 
 def _json_loads(data: str):
     return orjson.loads(data)
+
+def _safe_parse_legacy(data: str):
+    """Safely parse legacy Python-literal-like strings without using eval.
+    Returns parsed object or None on failure.
+    """
+    try:
+        # Prefer JSON first
+        return json.loads(data)
+    except Exception:
+        pass
+    try:
+        # Fall back to literal_eval for strings that look like Python dict/list
+        return ast.literal_eval(data)
+    except Exception:
+        return None
 
 # Redis client singleton (can be Redis or UpstashRedis)
 _redis_client: Optional[redis.Redis | UpstashRedis] = None
@@ -165,14 +181,12 @@ class RedisOps:
         try:
             return _json_loads(data)
         except (json.JSONDecodeError, TypeError):
-            # Handle old data stored with str() format
-            try:
-                # Try to evaluate old format data
-                return eval(data)
-            except:
-                # If all else fails, return None
-                print(f"Warning: Could not parse session data for {session_id}")
-                return None
+            # Handle old data stored with str() format using safe literal parsing
+            parsed = _safe_parse_legacy(data)
+            if isinstance(parsed, dict):
+                return parsed
+            print(f"Warning: Could not parse session data for {session_id}")
+            return None
     
     def delete_session(self, session_id: str):
         """Delete session data"""
@@ -219,10 +233,11 @@ class RedisOps:
             try:
                 parsed_messages.append(_json_loads(msg))
             except (json.JSONDecodeError, TypeError):
-                # Handle old data stored with str() format
-                try:
-                    parsed_messages.append(eval(msg))
-                except:
+                # Handle old data stored with str() format using safe literal parsing
+                parsed = _safe_parse_legacy(msg)
+                if isinstance(parsed, dict):
+                    parsed_messages.append(parsed)
+                else:
                     print(f"Warning: Could not parse message in chat history for {user_id}:{session_id}")
                     continue
         
@@ -260,12 +275,11 @@ class RedisOps:
         try:
             return _json_loads(data)
         except (json.JSONDecodeError, TypeError):
-            # Handle old data stored with str() format
-            try:
-                return eval(data)
-            except:
-                print(f"Warning: Could not parse ephemeral files data for {session_id}")
-                return None
+            parsed = _safe_parse_legacy(data)
+            if isinstance(parsed, dict):
+                return parsed
+            print(f"Warning: Could not parse ephemeral files data for {session_id}")
+            return None
     
     # Memory consolidation queue
     def queue_memory_task(self, user_id: str, task_data: dict):
@@ -281,12 +295,11 @@ class RedisOps:
         try:
             return _json_loads(task)
         except (json.JSONDecodeError, TypeError):
-            # Handle old data stored with str() format
-            try:
-                return eval(task)
-            except:
-                print(f"Warning: Could not parse memory task data")
-                return None
+            parsed = _safe_parse_legacy(task)
+            if isinstance(parsed, dict):
+                return parsed
+            print(f"Warning: Could not parse memory task data")
+            return None
     
     # User status
     def set_user_status(self, user_id: str, status: str, expire: int = 300):
@@ -321,9 +334,10 @@ class RedisOps:
                             data = self._safe_redis_operation('get', key)
                             if data and not data.startswith('{'):
                                 # Old format data, convert to JSON
-                                parsed_data = eval(data)
-                                self._safe_redis_operation('setex', key, 3600, _json_dumps(parsed_data))
-                                print(f"Migrated session data: {key}")
+                                parsed_data = _safe_parse_legacy(data)
+                                if isinstance(parsed_data, dict):
+                                    self._safe_redis_operation('setex', key, 3600, _json_dumps(parsed_data))
+                                    print(f"Migrated session data: {key}")
                         except:
                             continue
                 
@@ -340,8 +354,9 @@ class RedisOps:
                                         pipe.delete(key)
                                         for msg in messages:
                                             try:
-                                                parsed_msg = eval(msg)
-                                                pipe.lpush(key, _json_dumps(parsed_msg))
+                                                parsed_msg = _safe_parse_legacy(msg)
+                                                if isinstance(parsed_msg, dict):
+                                                    pipe.lpush(key, _json_dumps(parsed_msg))
                                             except:
                                                 continue
                                         pipe.expire(key, CHAT_HISTORY_TTL_SECONDS)
@@ -351,8 +366,9 @@ class RedisOps:
                                     self._safe_redis_operation('delete', key)
                                     for msg in messages:
                                         try:
-                                            parsed_msg = eval(msg)
-                                            self._safe_redis_operation('lpush', key, _json_dumps(parsed_msg))
+                                            parsed_msg = _safe_parse_legacy(msg)
+                                            if isinstance(parsed_msg, dict):
+                                                self._safe_redis_operation('lpush', key, _json_dumps(parsed_msg))
                                         except:
                                             continue
                                     self._safe_redis_operation('expire', key, CHAT_HISTORY_TTL_SECONDS)

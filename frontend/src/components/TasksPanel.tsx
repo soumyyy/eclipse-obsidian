@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { X, Plus, Check } from "lucide-react";
-import { getBackendUrl } from "@/utils/config";
+import { apiTasksList, apiTaskCreate, apiTaskComplete } from "@/lib/api";
 
 interface Task {
   id: number;
@@ -32,13 +32,7 @@ export default function TasksPanel({ isOpen, onClose }: TasksPanelProps) {
   const loadTasks = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch(`${getBackendUrl()}/tasks?user_id=soumya&status=open&limit=200`, { 
-        cache: "no-store",
-        headers: {
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
-        }
-      });
-      const data = await response.json();
+      const data = await apiTasksList("soumya");
       if (data.ok) setTasks(data.tasks || []);
     } catch (error) {
       console.error("Error loading tasks:", error);
@@ -50,18 +44,9 @@ export default function TasksPanel({ isOpen, onClose }: TasksPanelProps) {
   const addTask = async () => {
     if (!newTask.trim()) return;
     try {
-      const response = await fetch(`${getBackendUrl()}/tasks`, {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
-        },
-        body: JSON.stringify({ user_id: "soumya", content: newTask })
-      });
-      if (response.ok) {
-        setNewTask("");
-        loadTasks();
-      }
+      await apiTaskCreate(newTask, "soumya");
+      setNewTask("");
+      loadTasks();
     } catch (error) {
       console.error("Error adding task:", error);
     }
@@ -69,18 +54,11 @@ export default function TasksPanel({ isOpen, onClose }: TasksPanelProps) {
 
   const completeTask = async (taskId: number) => {
     try {
-      const response = await fetch(`${getBackendUrl()}/tasks/${taskId}/complete?user_id=soumya`, { 
-        method: "POST",
-        headers: {
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
-        }
-      });
-      if (response.ok) {
-        const taskToComplete = tasks.find(t => t.id === taskId);
-        if (taskToComplete) {
-          setCompletedTasks(prev => [...prev, taskToComplete]);
-          setTasks(prev => prev.filter(t => t.id !== taskId));
-        }
+      await apiTaskComplete(taskId, "soumya");
+      const taskToComplete = tasks.find(t => t.id === taskId);
+      if (taskToComplete) {
+        setCompletedTasks(prev => [...prev, taskToComplete]);
+        setTasks(prev => prev.filter(t => t.id !== taskId));
       }
     } catch (error) {
       console.error("Error completing task:", error);

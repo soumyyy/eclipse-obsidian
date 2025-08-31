@@ -10,7 +10,7 @@ import {
   Sparkles
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { getBackendUrl } from "@/utils/config";
+import { apiSessionsList, apiSessionCreate, apiSessionDelete } from "@/lib/api";
 
 interface ChatSession {
   id: string;
@@ -60,15 +60,8 @@ export default function ChatSidebar({
 
   const fetchSessions = async () => {
     try {
-      const response = await fetch(`${getBackendUrl()}/api/sessions?user_id=soumya`, {
-        headers: {
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
-        }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setSessions(data.sessions || []);
-      }
+      const data = await apiSessionsList("soumya");
+      setSessions(data.sessions || []);
     } catch (error) {
       console.error("Error fetching sessions:", error);
     }
@@ -81,24 +74,10 @@ export default function ChatSidebar({
       // Generate a default title that will be updated after first message
       const defaultTitle = `New Chat ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
       
-      const response = await fetch(`${getBackendUrl()}/api/sessions`, {
-        method: "POST",
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
-        },
-        body: JSON.stringify({
-          user_id: "soumya",
-          title: defaultTitle
-        })
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        setSessions(prev => [data.session, ...prev]);
-        onSessionSelect(data.session.id);
-        onClose(); // Close sidebar after creating
-      }
+      const data = await apiSessionCreate(defaultTitle, "soumya");
+      setSessions(prev => [data.session, ...prev]);
+      onSessionSelect(data.session.id);
+      onClose();
     } catch (error) {
       console.error("Error creating session:", error);
     } finally {
@@ -110,22 +89,11 @@ export default function ChatSidebar({
     if (!confirm("Are you sure you want to delete this chat?")) return;
     
     try {
-      const response = await fetch(`${getBackendUrl()}/api/sessions/${sessionId}`, {
-        method: "DELETE",
-        headers: {
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
-        }
-      });
-      
-      if (response.ok) {
-        setSessions(prev => prev.filter(s => s.id !== sessionId));
-        if (currentSessionId === sessionId) {
-          // If we deleted the current session, create a new one
-          const newSession = await createDefaultSession();
-          if (newSession) {
-            onSessionSelect(newSession.id);
-          }
-        }
+      await apiSessionDelete(sessionId, "soumya");
+      setSessions(prev => prev.filter(s => s.id !== sessionId));
+      if (currentSessionId === sessionId) {
+        const newSession = await createDefaultSession();
+        if (newSession) onSessionSelect(newSession.id);
       }
     } catch (error) {
       console.error("Error deleting session:", error);
@@ -134,23 +102,9 @@ export default function ChatSidebar({
 
   const createDefaultSession = async (): Promise<ChatSession | null> => {
     try {
-      const response = await fetch(`${getBackendUrl()}/api/sessions`, {
-        method: "POST",
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
-        },
-        body: JSON.stringify({
-          user_id: "soumya",
-          title: "New Chat"
-        })
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        setSessions(prev => [data.session, ...prev]);
-        return data.session;
-      }
+      const data = await apiSessionCreate("New Chat", "soumya");
+      setSessions(prev => [data.session, ...prev]);
+      return data.session as ChatSession;
     } catch (error) {
       console.error("Error creating default session:", error);
     }

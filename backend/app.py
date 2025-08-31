@@ -32,34 +32,31 @@ from formatting import JsonAnswer, Section, ensure_json_and_markdown, render_mar
 from bs4 import BeautifulSoup
 import requests
 
-# Add response caching for better performance
-RESPONSE_CACHE: Dict[str, Dict[str, Any]] = {}
+# Response caching via Redis for multi-worker safety
 CACHE_TTL = 300  # 5 minutes
 
+def _cache_key(query: str, context_hash: str) -> str:
+    seed = f"{query}:{context_hash}".encode()
+    return f"eclipse:cache:chat:{hashlib.sha256(seed).hexdigest()[:32]}"
+
 def _get_cached_response(query: str, context_hash: str) -> Optional[str]:
-    """Get cached response if available and not expired"""
-    cache_key = f"{query}:{context_hash}"
-    if cache_key in RESPONSE_CACHE:
-        cached = RESPONSE_CACHE[cache_key]
-        if time.time() - cached["timestamp"] < CACHE_TTL:
-            return cached["response"]
-        else:
-            del RESPONSE_CACHE[cache_key]
+    try:
+        redis_ops = RedisOps()
+        key = _cache_key(query, context_hash)
+        data = redis_ops.client.get(key)
+        if data:
+            return data if isinstance(data, str) else data.decode() if isinstance(data, bytes) else str(data)
+    except Exception:
+        pass
     return None
 
 def _cache_response(query: str, context_hash: str, response: str):
-    """Cache response for future use"""
-    cache_key = f"{query}:{context_hash}"
-    RESPONSE_CACHE[cache_key] = {
-        "response": response,
-        "timestamp": time.time()
-    }
-    
-    # Clean up old cache entries
-    current_time = time.time()
-    expired_keys = [k for k, v in RESPONSE_CACHE.items() if current_time - v["timestamp"] > CACHE_TTL]
-    for k in expired_keys:
-        del RESPONSE_CACHE[k]
+    try:
+        redis_ops = RedisOps()
+        key = _cache_key(query, context_hash)
+        redis_ops.client.setex(key, CACHE_TTL, response)
+    except Exception:
+        pass
 
 def _clear_ephemeral_context(session_id: str):
     """Clear ephemeral context for a session to prevent context bleeding"""
@@ -278,38 +275,6 @@ _fallback_sanitize = None  # moved to formatting.py
 
 _RX_TABLE = re.compile(r"\b(table|tabulate|comparison|vs)\b", flags=re.I)
 _RX_GREETING = re.compile(r"\s*(hi|hello|hey|yo|hola)[.!?]?\s*", flags=re.I)
-
-def _json_loads_fast(s: str):
-    try:
-        return orjson.loads(s)
-    except Exception:
-        return json.loads(s)
-
-def _ensure_json_and_markdown(raw: str, prefer_table: bool = False, prefer_compact: bool = False) -> Tuple[Optional[JsonAnswer], str]:
-    try:
-        obj = _json_loads_fast(raw)
-        ans = JsonAnswer(**obj)
-        return ans, render_markdown(ans, prefer_table=prefer_table, prefer_compact=prefer_compact)
-    except Exception:
-        # Attempt a one-shot repair call to coerce into schema
-        try:
-            from llm_cerebras import cerebras_chat
-            repair_prompt = [
-                {"role": "system", "content": "You are a JSON repair tool. Return ONLY valid JSON matching this exact schema: { title: string, sections: [{ heading: string, bullets?: string[], table?: { headers: string[], rows: string[][] } }] }. No explanations."},
-                {"role": "user", "content": raw[:6000]},
-            ]
-            fixed = cerebras_chat(repair_prompt, temperature=0.0, max_tokens=1000)
-            obj = _json_loads_fast(fixed)
-            ans = JsonAnswer(**obj)
-            return ans, render_markdown(ans, prefer_table=prefer_table, prefer_compact=prefer_compact)
-        except Exception:
-            # Fallback: keep structure; minimal cleanup only
-            try:
-                from formatting import fallback_sanitize as _fb
-                return None, _fb(raw)
-            except Exception:
-                # Ultimate fallback: return raw content
-                return None, raw
 
 # ----------------- Retriever singleton -----------------
 _retriever: Optional[RAG] = None
@@ -629,19 +594,103 @@ def _rrf_merge(hit_lists: List[List[Dict]], top_k: int = 5, k_rrf: float = 60.0)
     merged.sort(key=lambda x: x.get("score", 0.0), reverse=True)
     return merged[:top_k]
 
-# ----------------- In-memory session history -----------------
-# NOTE: For production, replace with Redis or a DB-backed store.
-SESSION_HISTORY: Dict[str, List[Dict[str, str]]] = {}
+# ----------------- Shared chat context builder -----------------
+def _build_context_bundle(user_id: str, message: str, session_id: Optional[str]) -> Tuple[str, List[Dict], List[Dict], str, Optional[str]]:
+    """
+    Build retrieval context used by both /chat and /chat/stream.
+    Returns (context, all_hits, dense_hits, file_context, uploads_info)
+    """
+    retriever = get_retriever()
+    # Query expansion across variants + RRF (trim to reduce latency)
+    variants = (_expand_queries(message) or [message])[:3]
+    dense_lists: List[List[Dict]] = []
+    for vq in variants[:6]:
+        _, hlist = retriever.build_context(vq, user_id=user_id)
+        dense_lists.append(hlist)
+    dense_hits = _rrf_merge(dense_lists, top_k=5)
 
-def _get_history(user_id: str) -> List[Dict[str, str]]:
-    return SESSION_HISTORY.setdefault(user_id, [])
+    mem_sem_hits = _semantic_memory_retrieve(user_id, message, limit=5)
+    eph_hits = _ephemeral_retrieve(session_id, message, top_k=5)
+    # Final RRF merge across sources, then build context
+    all_hits = _rrf_merge([eph_hits, mem_sem_hits, dense_hits], top_k=8)
 
-def _append_history(user_id: str, role: str, content: str, max_turns: int = 10) -> None:
-    hist = _get_history(user_id)
-    hist.append({"role": role, "content": content})
-    # keep only last N turns
-    if len(hist) > max_turns:
-        del hist[:-max_turns]
+    # Include uploaded file content in context if available (relevant only)
+    file_context = ""
+    if session_id and session_id in EPHEMERAL_SESSIONS:
+        try:
+            items = EPHEMERAL_SESSIONS[session_id].get("items") or []
+            if items:
+                relevant_items = []
+                query_lower = message.lower()
+                for item in items[:3]:
+                    item_text = item.get('text', '').lower()
+                    if any(word in item_text for word in query_lower.split() if len(word) > 3):
+                        relevant_items.append(item)
+                if relevant_items:
+                    blocks = []
+                    for item in relevant_items:
+                        path = item.get('path', 'upload')
+                        text = item.get('text', '')
+                        blocks.append(f"Content from {path}:\n{text}")
+                    file_context = "\n\n" + "\n\n".join(blocks)
+        except Exception:
+            pass
+
+    # Build more natural context (boost most recent attachments when question follows an upload)
+    context_parts = []
+    if all_hits:
+        context_parts.append("\n\n".join(f"[{i+1}] {h['text']}" for i, h in enumerate(all_hits)))
+    if file_context:
+        context_parts.append(file_context)
+    try:
+        store = EPHEMERAL_SESSIONS.get(session_id or "") or {}
+        last_added = float(store.get("last_added_at", 0.0))
+        if last_added and (time.time() - last_added) < 120:
+            recent_items = _ephemeral_recent(session_id, max_items=3)
+            if recent_items:
+                recent_block = "\n\n".join(f"[upload/recent] {it.get('path')}:\n{it.get('text','')[:1200]}" for it in recent_items)
+                context_parts.insert(0, recent_block)
+    except Exception:
+        pass
+
+    context = "\n\n".join(context_parts) if context_parts else ""
+
+    uploads_info = None
+    if session_id and session_id in EPHEMERAL_SESSIONS:
+        try:
+            items = EPHEMERAL_SESSIONS[session_id].get("items") or []
+            files = []
+            for it in items:
+                p = it.get("path", "(upload)")
+                fname = str(p).split("::", 1)[0]
+                if fname not in files:
+                    files.append(fname)
+            uploads_info = f"count={len(files)} files: {', '.join(files[:6])}"
+        except Exception:
+            uploads_info = "present"
+
+    return context, all_hits, dense_hits, file_context, uploads_info
+
+# ----------------- Session history (Redis-backed) -----------------
+DEFAULT_SESSION_ID = "default"
+
+def _get_history(user_id: str, session_id: Optional[str] = None, limit: int = 10) -> List[Dict[str, str]]:
+    sid = session_id or DEFAULT_SESSION_ID
+    try:
+        redis_ops = RedisOps()
+        hist = redis_ops.get_chat_history(user_id, sid, limit=limit)
+        return [{"role": it.get("role", "user"), "content": it.get("content", "")} for it in hist][-limit:]
+    except Exception:
+        return []
+
+def _append_history(user_id: str, role: str, content: str, session_id: Optional[str] = None, max_turns: int = 10) -> None:
+    sid = session_id or DEFAULT_SESSION_ID
+    try:
+        redis_ops = RedisOps()
+        msg = {"role": role, "content": content, "timestamp": datetime.utcnow().isoformat() + "Z"}
+        redis_ops.store_chat_message(user_id, sid, msg, max_messages=max_turns)
+    except Exception:
+        pass
 
 # ----------------- GitHub webhook signature -----------------
 def _verify_github_sig(secret: str, payload: bytes, signature: Optional[str]) -> bool:
@@ -784,70 +833,9 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
 
     # Retrieve context from FAISS + ephemeral + semantic memories
     try:
-        retriever = get_retriever()
-        # Query expansion across variants + RRF (trim to reduce latency)
-        variants = (_expand_queries(payload.message) or [payload.message])[:3]
-        dense_lists: List[List[Dict]] = []
-        for vq in variants[:6]:
-            _, hlist = retriever.build_context(vq, user_id=payload.user_id)
-            dense_lists.append(hlist)
-        hits = _rrf_merge(dense_lists, top_k=5)
-        mem_sem_hits = _semantic_memory_retrieve(payload.user_id, payload.message, limit=5)
-        eph_hits = _ephemeral_retrieve(payload.session_id, payload.message, top_k=5)
-        # Final RRF merge across sources, then build context
-        all_hits = _rrf_merge([eph_hits, mem_sem_hits, hits], top_k=8)
-        
-        # Include uploaded file content in context if available
-        file_context = ""
-        if payload.session_id and payload.session_id in EPHEMERAL_SESSIONS:
-            try:
-                items = EPHEMERAL_SESSIONS[payload.session_id].get("items") or []
-                if items:
-                    # Only include file content if it's relevant to the query
-                    relevant_items = []
-                    query_lower = payload.message.lower()
-                    for item in items[:3]:
-                        item_text = item.get('text', '').lower()
-                        # Check if file content is relevant to the query
-                        if any(word in item_text for word in query_lower.split() if len(word) > 3):
-                            relevant_items.append(item)
-                    
-                    if relevant_items:
-                        # If markdown, preserve code fences; if not, keep as plain
-                        blocks = []
-                        for item in relevant_items:
-                            path = item.get('path', 'upload')
-                            text = item.get('text', '')
-                            is_md = str(path).lower().endswith(('.md', '.markdown'))
-                            if is_md and ("```" in text or re.search(r"^\s{0,3}```", text, flags=re.M)):
-                                blocks.append(f"Content from {path}:\n{text}")
-                            elif is_md:
-                                blocks.append(f"Content from {path}:\n{text}")
-                            else:
-                                blocks.append(f"Content from {path}:\n{text}")
-                        file_context = "\n\n" + "\n\n".join(blocks)
-            except Exception:
-                pass
-        
-        # Build more natural context (boost most recent attachments when question follows an upload)
-        context_parts = []
-        if all_hits:
-            context_parts.append("\n\n".join(f"[{i+1}] {h['text']}" for i, h in enumerate(all_hits)))
-        if file_context:
-            context_parts.append(file_context)
-        # If the last action was a recent upload within past 2 minutes, prepend recent chunks to context
-        try:
-            store = EPHEMERAL_SESSIONS.get(payload.session_id or "") or {}
-            last_added = float(store.get("last_added_at", 0.0))
-            if last_added and (time.time() - last_added) < 120:
-                recent_items = _ephemeral_recent(payload.session_id, max_items=3)
-                if recent_items:
-                    recent_block = "\n\n".join(f"[upload/recent] {it.get('path')}:\n{it.get('text','')[:1200]}" for it in recent_items)
-                    context_parts.insert(0, recent_block)
-        except Exception:
-            pass
-        
-        context = "\n\n".join(context_parts) if context_parts else ""
+        context, all_hits, hits, file_context, uploads_info = _build_context_bundle(
+            payload.user_id, payload.message, payload.session_id
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Retriever not ready: {e}. Run `python ingest.py`.") from e
 
@@ -860,7 +848,7 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
         structured = []
     
     # Get recent conversation history for better context
-    recent_history = _get_history(payload.user_id)
+    recent_history = _get_history(payload.user_id, payload.session_id)
     conversation_context = ""
     if recent_history and len(recent_history) > 2:
         # Include last few exchanges for context
@@ -904,19 +892,7 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
     if conversation_context:
         memories_text = memories_text + conversation_context
 
-    uploads_info = None
-    if payload.session_id and payload.session_id in EPHEMERAL_SESSIONS:
-        try:
-            items = EPHEMERAL_SESSIONS[payload.session_id].get("items") or []
-            files = []
-            for it in items:
-                p = it.get("path", "(upload)")
-                fname = str(p).split("::", 1)[0]
-                if fname not in files:
-                    files.append(fname)
-            uploads_info = f"count={len(files)} files: {', '.join(files[:6])}"
-        except Exception:
-            uploads_info = "present"
+    # uploads_info already computed in _build_context_bundle
     
     # Pull recent Redis history for this session (if any) to improve follow-ups
     recent_session_history = []
@@ -946,13 +922,14 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
     # Compact response if the user message looks like a short greeting/question
     # Only compact for pure greetings; otherwise keep detail
     prefer_compact = bool(re.fullmatch(r"\s*(hi|hello|hey|yo|hola)[.!?]?\s*", (payload.message or ""), flags=re.I))
-    result = _ensure_json_and_markdown(reply, prefer_table=prefer_table, prefer_compact=prefer_compact)
+    from formatting import ensure_json_and_markdown as _shared_ensure
+    result = _shared_ensure(reply, prefer_table=prefer_table, prefer_compact=prefer_compact)
     if isinstance(result, tuple) and len(result) == 2:
         _, formatted_md = result
     else:
         formatted_md = reply
-    _append_history(payload.user_id, "user", payload.message)
-    _append_history(payload.user_id, "assistant", formatted_md or reply)
+    _append_history(payload.user_id, "user", payload.message, payload.session_id)
+    _append_history(payload.user_id, "assistant", formatted_md or reply, payload.session_id)
     # Persist to Redis when session_id present so follow-ups get proper context
     try:
         if payload.session_id:
@@ -992,46 +969,9 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
         raise HTTPException(400, "message required")
 
     try:
-        retriever = get_retriever()
-        variants = (_expand_queries(payload.message) or [payload.message])[:3]
-        dense_lists: List[List[Dict]] = []
-        for vq in variants[:6]:
-            _, hlist = retriever.build_context(vq, user_id=payload.user_id)
-            dense_lists.append(hlist)
-        hits = _rrf_merge(dense_lists, top_k=5)
-        mem_sem_hits = _semantic_memory_retrieve(payload.user_id, payload.message, limit=5)
-        eph_hits = _ephemeral_retrieve(payload.session_id, payload.message, top_k=5)
-        all_hits = _rrf_merge([eph_hits, mem_sem_hits, hits], top_k=8)
-        
-        # Include uploaded file content in context if available
-        file_context = ""
-        if payload.session_id and payload.session_id in EPHEMERAL_SESSIONS:
-          try:
-            items = EPHEMERAL_SESSIONS[payload.session_id].get("items") or []
-            if items:
-              # Only include file content if it's relevant to the query
-              relevant_items = []
-              query_lower = payload.message.lower()
-              for item in items[:3]:
-                item_text = item.get('text', '').lower()
-                # Check if file content is relevant to the query
-                if any(word in item_text for word in query_lower.split() if len(word) > 3):
-                  relevant_items.append(item)
-              
-              if relevant_items:
-                file_context = "\n\n" + "\n\n".join(f"Content from {item.get('path', 'upload')}:\n{item.get('text', '')}" for item in relevant_items)
-          except Exception:
-            pass
-        
-        # Build more natural context
-        context_parts = []
-        if all_hits:
-          # use 'text' (RAG returns 'text'), not 'content'
-          context_parts.append("Relevant information:\n" + "\n\n".join(f"From {hit.get('path', 'memory')}:\n{hit.get('text', '')}" for hit in all_hits))
-        if file_context:
-          context_parts.append(file_context)
-        
-        context = "\n\n".join(context_parts) if context_parts else ""
+        context, all_hits, hits, file_context, _ = _build_context_bundle(
+            payload.user_id, payload.message, payload.session_id
+        )
         
         # Check cache for similar queries
         context_hash = _get_context_hash(all_hits, file_context)
@@ -1087,7 +1027,7 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
         finally:
             try:
                 full = "".join(buffer)
-                _append_history(payload.user_id, "user", payload.message)
+                _append_history(payload.user_id, "user", payload.message, payload.session_id)
                 try:
                     _auto_capture_intents(payload.user_id, payload.message)
                 except Exception:
@@ -1096,7 +1036,8 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                 # Format to JSON-first → markdown (always do this for response)
                 prefer_table = bool(re.search(r"\b(table|tabulate|comparison|vs)\b", payload.message, flags=re.I))
                 prefer_compact = bool(re.fullmatch(r"\s*(hi|hello|hey|yo|hola)[.!?]?\s*", (payload.message or ""), flags=re.I))
-                result = _ensure_json_and_markdown(full, prefer_table=prefer_table, prefer_compact=prefer_compact)
+                from formatting import ensure_json_and_markdown as _shared_ensure
+                result = _shared_ensure(full, prefer_table=prefer_table, prefer_compact=prefer_compact)
                 if isinstance(result, tuple) and len(result) == 2:
                     ans, formatted_md = result
                 else:
@@ -1115,7 +1056,7 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                         }
                         redis_ops.store_chat_message(payload.user_id, payload.session_id, user_message)
                         
-                        _append_history(payload.user_id, "assistant", formatted_md or full)
+                        _append_history(payload.user_id, "assistant", formatted_md or full, payload.session_id)
                         
                         # Store assistant message
                         assistant_message = {
@@ -1428,7 +1369,7 @@ def summarize_url(payload: SummarizeIn):
 
 # ----------------- Memories CRUD -----------------
 
-@app.get("/memories")  # Temporarily removed API key requirement
+@app.get("/memories", dependencies=[Depends(require_api_key)])
 def memories_list(user_id: str, limit: int = 200, type: Optional[str] = None, contains: Optional[str] = None):
     return {"ok": True, "items": list_memories(user_id, limit=limit, mtype=type, contains=contains)}
 
