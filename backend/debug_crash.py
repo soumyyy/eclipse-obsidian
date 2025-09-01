@@ -15,7 +15,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 def test_cerebras():
     print("Testing Cerebras API...")
     try:
-        from llm_cerebras import cerebras_chat
+        from clients.llm_cerebras import cerebras_chat
         messages = [{"role": "user", "content": "hi"}]
         result = cerebras_chat(messages)
         print(f"✅ Cerebras API works: {result[:50]}...")
@@ -27,7 +27,7 @@ def test_cerebras():
 def test_cerebras_stream():
     print("Testing Cerebras streaming...")
     try:
-        from llm_cerebras import cerebras_chat_stream
+        from clients.llm_cerebras import cerebras_chat_stream
         messages = [{"role": "user", "content": "hi"}]
         chunks = list(cerebras_chat_stream(messages))
         print(f"✅ Cerebras streaming works: {len(chunks)} chunks")
@@ -62,7 +62,7 @@ def test_embedder():
 def test_redis():
     print("Testing Redis connection...")
     try:
-        from redis_config import RedisOps
+        from clients.redis_config import RedisOps
         redis_ops = RedisOps()
         # Simple test
         redis_ops.set("test", "value", ttl=10)

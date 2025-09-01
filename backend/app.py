@@ -39,12 +39,12 @@ from pydantic import BaseModel
 
 from rag import RAG, make_faiss_retriever                      # our retriever class
 from ingest import ingest_from_dir   # ingest pipeline that builds FAISS/docs from a dir
-from github_fetch import fetch_repo_snapshot
+from clients.github_fetch import fetch_repo_snapshot
 from memory import ensure_db, recall_memories, add_memory, add_task, list_tasks, complete_task, add_fact, add_summary, list_pending_memories, approve_pending_memory, reject_pending_memory, list_memories, update_memory, delete_memory, delete_all_memories, search_memories
 from memory_extractor import extract_and_store_memories, run_memory_maintenance
-from redis_config import RedisOps, RedisKeys
-from llm_cerebras import cerebras_chat   # Cerebras chat wrapper
-from llm_cerebras import cerebras_chat_stream  # Cerebras streaming chat
+from clients.redis_config import RedisOps, RedisKeys
+from clients.llm_cerebras import cerebras_chat   # Cerebras chat wrapper
+from clients.llm_cerebras import cerebras_chat_stream  # Cerebras streaming chat
 from cot_utils import should_apply_cot, build_cot_hint, inject_cot_hint
 from formatting import JsonAnswer, Section, ensure_json_and_markdown, render_markdown, fallback_sanitize
 from bs4 import BeautifulSoup

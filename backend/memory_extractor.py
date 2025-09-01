@@ -4,7 +4,7 @@ import hashlib
 from typing import List, Dict, Any, Optional
 from rag import get_retriever
 from memory import list_memories, delete_memory, update_memory
-from llm_cerebras import cerebras_chat_with_model
+from clients.llm_cerebras import cerebras_chat_with_model
 from memory import add_memory, recall_memories, add_task, upsert_entity, link_memory_to_entity, add_pending_memory
 
 from date_utils import parse_due_text_to_ts

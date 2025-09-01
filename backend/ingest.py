@@ -25,7 +25,7 @@ from sentence_transformers import SentenceTransformer
 import numpy as np
 import faiss
 
-from github_fetch import fetch_repo_snapshot  # <- we rely on this
+from clients.github_fetch import fetch_repo_snapshot  # <- moved to clients
 from memory import ensure_db, create_mem_item  # Phase 1 structured store
 
 BASE_DIR = Path(__file__).resolve().parent

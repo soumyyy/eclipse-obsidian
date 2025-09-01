@@ -1,4 +1,4 @@
-# backend/llm_cerebras.py
+# backend/clients/llm_cerebras.py
 import os
 from typing import List, Dict, Iterable, Optional
 from cerebras.cloud.sdk import Cerebras
@@ -64,3 +64,5 @@ def cerebras_chat_with_model(messages: List[Dict], model: Optional[str] = None, 
         stream=False,
     )
     return resp.choices[0].message.content
+
+

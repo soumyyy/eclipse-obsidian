@@ -1,4 +1,4 @@
-# backend/github_fetch.py
+# backend/clients/github_fetch.py
 import os, tempfile, zipfile, io, shutil, requests
 
 OWNER = os.getenv("GITHUB_OWNER")
@@ -29,3 +29,5 @@ def fetch_repo_snapshot() -> str:
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise RuntimeError("ZIP extraction produced no directory")
     return subdirs[0]
+
+
