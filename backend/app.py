@@ -8,13 +8,90 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
-# Memory monitoring
+# Memory monitoring and protection system
 import psutil
+import gc
+from datetime import datetime
+
 def get_memory_usage():
     process = psutil.Process(os.getpid())
     return process.memory_info().rss / 1024 / 1024  # MB
 
-MEMORY_LIMIT_MB = 1800  # Leave 200MB headroom in 2GB VPS
+def get_system_memory():
+    memory = psutil.virtual_memory()
+    return {
+        'total': memory.total / 1024 / 1024,
+        'available': memory.available / 1024 / 1024,
+        'percent': memory.percent,
+        'free': memory.free / 1024 / 1024
+    }
+
+MEMORY_LIMIT_MB = 1400  # Conservative limit to prevent OOM kills
+MEMORY_WARNING_MB = 1200  # Warning threshold for monitoring
+MEMORY_CRITICAL_MB = 1600  # Critical threshold - reject all new requests
+
+# Memory alert tracking
+_last_memory_alert = 0
+_memory_alert_count = 0
+
+def check_memory_and_alert(current_memory: float) -> dict:
+    """Check memory status and send alerts if needed"""
+    global _last_memory_alert, _memory_alert_count
+    
+    status = "healthy"
+    should_reject = False
+    
+    if current_memory >= MEMORY_CRITICAL_MB:
+        status = "critical"
+        should_reject = True
+        _send_memory_alert("CRITICAL", current_memory)
+    elif current_memory >= MEMORY_LIMIT_MB:
+        status = "overloaded" 
+        should_reject = True
+        _send_memory_alert("OVERLOAD", current_memory)
+    elif current_memory >= MEMORY_WARNING_MB:
+        status = "warning"
+        _send_memory_alert("WARNING", current_memory)
+    
+    return {
+        "status": status,
+        "current_mb": current_memory,
+        "should_reject": should_reject,
+        "system_memory": get_system_memory()
+    }
+
+def _send_memory_alert(level: str, memory_mb: float):
+    """Send memory alert notification (rate limited)"""
+    global _last_memory_alert, _memory_alert_count
+    
+    now = time.time()
+    # Rate limit alerts: max 1 per minute
+    if now - _last_memory_alert < 60:
+        return
+        
+    _last_memory_alert = now
+    _memory_alert_count += 1
+    
+    system_mem = get_system_memory()
+    alert_msg = f"""
+🚨 MEMORY ALERT [{level}] - Backend Server
+Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Process Memory: {memory_mb:.1f}MB
+System Memory: {system_mem['percent']:.1f}% used ({system_mem['available']:.1f}MB available)
+Alert Count: {_memory_alert_count}
+Action: {"REJECTING NEW REQUESTS" if memory_mb >= MEMORY_LIMIT_MB else "MONITORING"}
+"""
+    
+    print(alert_msg)  # Console log
+    
+    # TODO: Add webhook/email notification here if needed
+    # Example: send_webhook_alert(alert_msg)
+
+def force_garbage_collection():
+    """Force garbage collection to free memory"""
+    collected = gc.collect()
+    print(f"Garbage collection freed {collected} objects")
+    return collected
 # --------------------------------------
 
 from typing import List, Dict, Optional, Tuple, Any
@@ -795,6 +872,26 @@ def root():
 def health():
     return {"status": "ok"}
 
+@app.get("/memory")
+def memory_status():
+    """Memory monitoring endpoint"""
+    current_memory = get_memory_usage()
+    memory_status = check_memory_and_alert(current_memory)
+    
+    return {
+        "status": memory_status["status"],
+        "process_memory_mb": current_memory,
+        "system_memory": memory_status["system_memory"],
+        "limits": {
+            "warning_mb": MEMORY_WARNING_MB,
+            "limit_mb": MEMORY_LIMIT_MB,
+            "critical_mb": MEMORY_CRITICAL_MB
+        },
+        "ephemeral_sessions": len(EPHEMERAL_SESSIONS),
+        "alert_count": _memory_alert_count,
+        "timestamp": datetime.now().isoformat()
+    }
+
 @app.get("/healthz")
 def healthz():
     return {"ok": True, "assistant": ASSISTANT}
@@ -856,6 +953,19 @@ async def github_webhook(request: Request):
 def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_api_key)):
     if not payload.message.strip():
         raise HTTPException(400, "message required")
+    
+    # Memory check for non-streaming endpoint too
+    current_memory = get_memory_usage()
+    memory_status = check_memory_and_alert(current_memory)
+    
+    if memory_status["should_reject"]:
+        force_garbage_collection()
+        new_memory = get_memory_usage()
+        if new_memory >= MEMORY_LIMIT_MB:
+            raise HTTPException(
+                503, 
+                f"Server temporarily overloaded ({new_memory:.1f}MB). Please try again in a moment or use a simpler query."
+            )
 
     # Retrieve context from FAISS + ephemeral + semantic memories
     try:
@@ -994,12 +1104,26 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
     if not payload.message.strip():
         raise HTTPException(400, "message required")
     
-    # Memory protection: check before processing complex queries
+    # Graceful degradation: check memory and reject if overloaded
     current_memory = get_memory_usage()
-    print(f"Memory usage before query: {current_memory:.1f}MB")
-    if current_memory > MEMORY_LIMIT_MB:
-        print(f"Memory limit exceeded: {current_memory:.1f}MB > {MEMORY_LIMIT_MB}MB")
-        raise HTTPException(503, "Server memory limit exceeded, please try a simpler query")
+    memory_status = check_memory_and_alert(current_memory)
+    
+    print(f"Memory status: {memory_status['status']} ({current_memory:.1f}MB)")
+    
+    if memory_status["should_reject"]:
+        # Force garbage collection attempt
+        force_garbage_collection()
+        
+        # Check again after cleanup
+        new_memory = get_memory_usage()
+        if new_memory >= MEMORY_LIMIT_MB:
+            error_msg = f"Server temporarily overloaded ({new_memory:.1f}MB). Please try again in a moment or use a simpler query."
+            return StreamingResponse(
+                iter([f"data: {{\"type\":\"error\",\"content\":\"{error_msg}\"}}\n\n", "data: [DONE]\n\n"]),
+                media_type="text/event-stream",
+                status_code=503,
+                headers={"Retry-After": "30"}
+            )
 
     try:
         context, all_hits, hits, file_context, _ = _build_context_bundle(
