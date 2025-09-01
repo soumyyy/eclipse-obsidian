@@ -1,4 +1,5 @@
 # --- Load .env before anything else ---
+from __future__ import annotations
 import os, hmac, hashlib, shutil
 import io
 import json
@@ -8,93 +9,25 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
-# Memory monitoring and protection system
 import psutil
 import gc
 from datetime import datetime
 
-def get_memory_usage():
-    process = psutil.Process(os.getpid())
-    return process.memory_info().rss / 1024 / 1024  # MB
-
-def get_system_memory():
-    memory = psutil.virtual_memory()
-    return {
-        'total': memory.total / 1024 / 1024,
-        'available': memory.available / 1024 / 1024,
-        'percent': memory.percent,
-        'free': memory.free / 1024 / 1024
-    }
-
-MEMORY_LIMIT_MB = 1400  # Conservative limit to prevent OOM kills
-MEMORY_WARNING_MB = 1200  # Warning threshold for monitoring
-MEMORY_CRITICAL_MB = 1600  # Critical threshold - reject all new requests
-
-# Memory alert tracking
-_last_memory_alert = 0
-_memory_alert_count = 0
-
-def check_memory_and_alert(current_memory: float) -> dict:
-    """Check memory status and send alerts if needed"""
-    global _last_memory_alert, _memory_alert_count
-    
-    status = "healthy"
-    should_reject = False
-    
-    if current_memory >= MEMORY_CRITICAL_MB:
-        status = "critical"
-        should_reject = True
-        _send_memory_alert("CRITICAL", current_memory)
-    elif current_memory >= MEMORY_LIMIT_MB:
-        status = "overloaded" 
-        should_reject = True
-        _send_memory_alert("OVERLOAD", current_memory)
-    elif current_memory >= MEMORY_WARNING_MB:
-        status = "warning"
-        _send_memory_alert("WARNING", current_memory)
-    
-    return {
-        "status": status,
-        "current_mb": current_memory,
-        "should_reject": should_reject,
-        "system_memory": get_system_memory()
-    }
-
-def _send_memory_alert(level: str, memory_mb: float):
-    """Send memory alert notification (rate limited)"""
-    global _last_memory_alert, _memory_alert_count
-    
-    now = time.time()
-    # Rate limit alerts: max 1 per minute
-    if now - _last_memory_alert < 60:
-        return
-        
-    _last_memory_alert = now
-    _memory_alert_count += 1
-    
-    system_mem = get_system_memory()
-    alert_msg = f"""
-🚨 MEMORY ALERT [{level}] - Backend Server
-Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-Process Memory: {memory_mb:.1f}MB
-System Memory: {system_mem['percent']:.1f}% used ({system_mem['available']:.1f}MB available)
-Alert Count: {_memory_alert_count}
-Action: {"REJECTING NEW REQUESTS" if memory_mb >= MEMORY_LIMIT_MB else "MONITORING"}
-"""
-    
-    print(alert_msg)  # Console log
-    
-    # TODO: Add webhook/email notification here if needed
-    # Example: send_webhook_alert(alert_msg)
-
-def force_garbage_collection():
-    """Force garbage collection to free memory"""
-    collected = gc.collect()
-    print(f"Garbage collection freed {collected} objects")
-    return collected
+# Use shared services for memory guard and task detection
+from services.vpsmemoryguard import (
+    MEMORY_LIMIT_MB,
+    MEMORY_WARNING_MB,
+    MEMORY_CRITICAL_MB,
+    check_memory_and_alert,
+    get_memory_usage_mb as get_memory_usage,
+    get_system_memory,
+    force_gc as force_garbage_collection,
+)
+from services.task_management import smart_detect_task as _smart_detect_task
+from services.task_management import auto_capture_intents as _auto_capture_intents
 # --------------------------------------
 
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Tuple, Any, Union
 import re, time
 from datetime import datetime
 
@@ -491,67 +424,7 @@ def _ephemeral_recent(session_id: Optional[str], max_items: int = 3) -> List[Dic
     recent: List[Dict[str, str]] = store.get("recent", [])  # type: ignore
     return list(recent[-max_items:])
 
-# ----------------- Intent capture (auto tasks/notes) -----------------
-def _auto_capture_intents(user_id: str, text: str) -> None:
-    """Create tasks/notes based on natural phrasing like 'remind me to', 'take a note', etc."""
-    try:
-        from memory import add_task as _add_task, add_memory as _add_memory
-    except Exception:
-        return
-
-    line = (text or "").strip()
-    if not line:
-        return
-
-    created_any = False
-
-    # Task patterns (ordered)
-    task_patterns = [
-        re.compile(r"^\s*(?:remind(?:\s+me)?\s+to)\s+(.+)$", re.I),
-        re.compile(r"^\s*(?:create|add|make)\s+(?:a\s+)?(?:task|todo)[:,-]?\s+(.+)$", re.I),
-        re.compile(r"^\s*(?:todo|task)[:,-]?\s+(.+)$", re.I),
-        re.compile(r"\bfollow[- ]?up\s+on\s+(.+)$", re.I),
-    ]
-    for rx in task_patterns:
-        m = rx.search(line)
-        if m and m.group(1).strip():
-            try:
-                _add_task(user_id, m.group(1).strip())
-                created_any = True
-                break
-            except Exception:
-                pass
-
-    # Note patterns (only if not already created a task)
-    if not created_any:
-        note_patterns = [
-            re.compile(r"^\s*(?:please\s+)?(?:take\s+a\s+)?note(?:\s+(?:this|that))?[:,-]?\s*(.+)$", re.I),
-            re.compile(r"^\s*note\s*[:,-]?\s*(.+)$", re.I),
-            re.compile(r"^\s*remember\s+(?:that\s+)?(.+)$", re.I),
-        ]
-        for rx in note_patterns:
-            m = rx.search(line)
-            if m and m.group(1).strip():
-                try:
-                    _add_memory(user_id, m.group(1).strip(), mtype="note")
-                    created_any = True
-                    break
-                except Exception:
-                    pass
-
-    # Last-resort light heuristic: if the message starts with verbs like 'remind', 'todo', 'task', 'note'
-    if not created_any:
-        if re.match(r"^\s*(remind|todo|task|note)\b", line, re.I):
-            head = re.match(r"^\s*(remind\s+me\s+to|remind|todo|task|note)\b[:,-]?\s*(.*)$", line, re.I)
-            if head and head.group(2).strip():
-                payload = head.group(2).strip()
-                try:
-                    if head.group(1).lower().startswith("note"):
-                        _add_memory(user_id, payload, mtype="note")
-                    else:
-                        _add_task(user_id, payload)
-                except Exception:
-                    pass
+## moved to services.task_management.auto_capture_intents
 
 # ----------------- Semantic memory retrieval (on-the-fly) -----------------
 def _semantic_memory_retrieve(user_id: str, query: str, limit: int = 5):
@@ -888,9 +761,48 @@ def memory_status():
             "critical_mb": MEMORY_CRITICAL_MB
         },
         "ephemeral_sessions": len(EPHEMERAL_SESSIONS),
-        "alert_count": _memory_alert_count,
+        "alert_count": memory_status.get("alerts", 0),
         "timestamp": datetime.now().isoformat()
     }
+
+@app.get("/performance")
+def performance_status():
+    """Performance monitoring endpoint"""
+    import time
+    
+    # Test response time
+    start_time = time.time()
+    current_memory = get_memory_usage()
+    memory_check_time = time.time() - start_time
+    
+    return {
+        "memory_check_ms": round(memory_check_time * 1000, 2),
+        "current_memory_mb": round(current_memory, 1),
+        "system_load": {
+            "cpu_percent": psutil.cpu_percent(interval=0.1),
+            "memory_percent": psutil.virtual_memory().percent
+        },
+        "optimizations": {
+            "token_limit_short": "800 tokens",
+            "token_limit_long": "1200 tokens", 
+            "garbage_collection": "enabled",
+            "memory_limits": "enabled"
+        }
+    }
+
+@app.post("/test/task-detection")
+def test_task_detection(message: str = Form(...)):
+    """Test endpoint for smart task detection"""
+    try:
+        task = _smart_detect_task(message)
+        return {
+            "message": message,
+            "detected_task": task,
+            "is_task": task is not None,
+            "smart_detection_enabled": os.getenv("SMART_TASK_DETECTION", "true").lower() not in ("0", "false", "no")
+        }
+    except Exception as e:
+        return {"error": str(e), "message": message}
 
 @app.get("/healthz")
 def healthz():
@@ -1086,6 +998,13 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
         add_fact(payload.user_id, payload.save_fact)
     if payload.save_task:
         add_task(payload.user_id, payload.save_task)
+    
+    # Smart AI-powered task detection
+    if not payload.save_task:
+        task_content = _smart_detect_task(payload.message)
+        if task_content:
+            add_task(payload.user_id, task_content)
+            print(f"🤖 AI-detected task: {task_content}")
 
     # Background memory extraction (feature-flagged)
     # Avoid storing memories when ephemeral uploads are used in this session
@@ -1239,10 +1158,11 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                     if payload.save_task and payload.save_task.strip():
                         add_task(payload.user_id, payload.save_task.strip())
                     else:
-                        # Lightweight detector: if user intentionally writes a task prefix
-                        m = re.match(r"\s*(task:|todo:)\s*(.+)$", payload.message, flags=re.I)
-                        if m and m.group(2).strip():
-                            add_task(payload.user_id, m.group(2).strip())
+                        # Smart AI-powered task detection
+                        task_content = _smart_detect_task(payload.message)
+                        if task_content:
+                            add_task(payload.user_id, task_content)
+                            print(f"🤖 AI-detected task: {task_content}")
                 except Exception as e:
                     print(f"Task creation skipped: {e}")
                 
