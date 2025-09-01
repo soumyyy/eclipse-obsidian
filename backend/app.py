@@ -294,7 +294,7 @@ def get_retriever():
         retr, embed_fn = make_faiss_retriever(
             index_path=str(Path(__file__).resolve().parent / "data" / "index.faiss"),
             docs_path=str(Path(__file__).resolve().parent / "data" / "docs.pkl"),
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            model_name="sentence-transformers/all-MiniLM-L12-v2",
         )
         _rag = RAG(retriever=retr, embed_fn=embed_fn, top_k=5)
     return _rag
@@ -302,6 +302,8 @@ def get_retriever():
 # ----------------- Ephemeral per-session uploads -----------------
 # Do NOT persist to FAISS or memory. In-memory only per session.
 EPHEMERAL_SESSIONS: Dict[str, Dict[str, object]] = {}
+MAX_EPHEMERAL_SESSIONS = 10  # Limit sessions to prevent memory leaks
+MAX_VECTORS_PER_SESSION = 50  # Limit vectors per session
 
 def _ephemeral_add(session_id: str, texts_with_paths: List[Dict[str, str]]):
     if not session_id:
@@ -314,12 +316,28 @@ def _ephemeral_add(session_id: str, texts_with_paths: List[Dict[str, str]]):
         if not texts:
             return
         vecs = embed_fn(texts)  # already L2-normalized float32
+        
+        # Cleanup old sessions to prevent memory leaks
+        if len(EPHEMERAL_SESSIONS) >= MAX_EPHEMERAL_SESSIONS:
+            # Remove oldest sessions
+            oldest_sessions = sorted(EPHEMERAL_SESSIONS.items(), 
+                                   key=lambda x: x[1].get("last_added_at", 0))
+            for old_sid, _ in oldest_sessions[:len(EPHEMERAL_SESSIONS)//2]:
+                del EPHEMERAL_SESSIONS[old_sid]
+                print(f"Cleaned up old ephemeral session: {old_sid}")
+        
         store = EPHEMERAL_SESSIONS.setdefault(session_id, {"vecs": None, "items": [], "recent": [], "last_added_at": 0.0})
         old_vecs = store["vecs"]
         if old_vecs is None:
             store["vecs"] = vecs
         else:
-            store["vecs"] = np.vstack([old_vecs, vecs])
+            # Limit vectors per session to prevent unbounded growth
+            if old_vecs.shape[0] >= MAX_VECTORS_PER_SESSION:
+                # Keep only recent vectors
+                store["vecs"] = np.vstack([old_vecs[-MAX_VECTORS_PER_SESSION//2:], vecs])
+                print(f"Trimmed ephemeral vectors for session {session_id}")
+            else:
+                store["vecs"] = np.vstack([old_vecs, vecs])
     except Exception as e:
         print(f"RAG system not available, using simple storage: {e}")
         # Fallback: simple storage without embeddings
@@ -978,6 +996,7 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
     
     # Memory protection: check before processing complex queries
     current_memory = get_memory_usage()
+    print(f"Memory usage before query: {current_memory:.1f}MB")
     if current_memory > MEMORY_LIMIT_MB:
         print(f"Memory limit exceeded: {current_memory:.1f}MB > {MEMORY_LIMIT_MB}MB")
         raise HTTPException(503, "Server memory limit exceeded, please try a simpler query")
@@ -1043,6 +1062,9 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
         finally:
             try:
                 full = "".join(buffer)
+                # Log memory usage after processing
+                final_memory = get_memory_usage()
+                print(f"Memory usage after query: {final_memory:.1f}MB")
                 _append_history(payload.user_id, "user", payload.message, payload.session_id)
                 try:
                     _auto_capture_intents(payload.user_id, payload.message)
