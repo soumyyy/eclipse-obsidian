@@ -68,17 +68,17 @@ def get_retriever():
 
 # ---------- embedder + factory that returns (retriever, embed_fn) ----------
 
-def load_embedder(name: str = "sentence-transformers/all-mpnet-base-v2"):
+def load_embedder(name: str = "sentence-transformers/all-MiniLM-L12-v2"):
     """
     Shared sentence-transformers embedder.
-    Upgraded to all-mpnet-base-v2 for better semantic understanding (768 dims, ~420MB)
+    Using all-MiniLM-L12-v2: better than L6-v2 but lighter than mpnet (~120MB, 384 dims)
     """
     return SentenceTransformer(name)
 
 def make_faiss_retriever(
     index_path: str = INDEX_PATH,
     docs_path: str  = DOCS_PATH,
-    model_name: str = "sentence-transformers/all-mpnet-base-v2",
+    model_name: str = "sentence-transformers/all-MiniLM-L12-v2",
 ):
     """
     Returns (retriever, embed_fn) suitable for constructing RAG(retriever, embed_fn).
