@@ -139,7 +139,7 @@ app.add_middleware(
 )
 
 # Compression
-app.add_middleware(GZipMiddleware, minimum_size=512)
+app.add_middleware(GZipMiddleware, minimum_size=8192)
 
 # ----------------- Models -----------------
 class ChatIn(BaseModel):
@@ -243,8 +243,16 @@ Quality Bar:
 You may use the provided CONTEXT, MEMORIES and UPLOADS to build the JSON content. If unsure, reflect that in a bullet.
 """
 
-def build_messages(user_id: str, user_msg: str, context: str, memories_text: str, uploads_info: Optional[str] = None, extra_history: Optional[List[Dict]] = None):
-    history = _get_history(user_id)
+# Streaming prompt: produce concise, clean Markdown only (no JSON schema) for live typing UX
+STREAM_SYSTEM_PROMPT = (
+    "You are an assistant responding in clean Markdown only. "
+    "Do not output JSON, code fences with JSON, or schemas. "
+    "Keep responses concise and readable. Use headings, lists, and code blocks only when helpful."
+)
+
+def build_messages(user_id: str, user_msg: str, context: str, memories_text: str, uploads_info: Optional[str] = None, session_id: Optional[str] = None, extra_history: Optional[List[Dict]] = None):
+    # Only include history from the current session (or none if not provided)
+    history = _get_history(user_id, session_id) if session_id else []
     base = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "system", "content": f"UPLOADS:\n{uploads_info or 'none'}"},
@@ -577,18 +585,19 @@ def _build_context_bundle(user_id: str, message: str, session_id: Optional[str])
     Returns (context, all_hits, dense_hits, file_context, uploads_info)
     """
     retriever = get_retriever()
-    # Query expansion across variants + RRF (trim to reduce latency)
-    variants = (_expand_queries(message) or [message])[:3]
+    # Keep retrieval light for speed: single variant, small top_k
+    variants = [message]
     dense_lists: List[List[Dict]] = []
-    for vq in variants[:6]:
+    for vq in variants[:1]:
         _, hlist = retriever.build_context(vq, user_id=user_id)
         dense_lists.append(hlist)
-    dense_hits = _rrf_merge(dense_lists, top_k=5)
+    dense_hits = _rrf_merge(dense_lists, top_k=3)
 
-    mem_sem_hits = _semantic_memory_retrieve(user_id, message, limit=5)
+    # Skip semantic memory pass for very short prompts
+    mem_sem_hits = _semantic_memory_retrieve(user_id, message, limit=3) if len(message.split()) >= 15 else []
     eph_hits = _ephemeral_retrieve(session_id, message, top_k=5)
     # Final RRF merge across sources, then build context
-    all_hits = _rrf_merge([eph_hits, mem_sem_hits, dense_hits], top_k=8)
+    all_hits = _rrf_merge([eph_hits, mem_sem_hits, dense_hits], top_k=5)
 
     # Include uploaded file content in context if available (relevant only)
     file_context = ""
@@ -865,7 +874,7 @@ async def github_webhook(request: Request):
 def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_api_key)):
     if not payload.message.strip():
         raise HTTPException(400, "message required")
-    
+
     # Memory check for non-streaming endpoint too
     current_memory = get_memory_usage()
     memory_status = check_memory_and_alert(current_memory)
@@ -954,7 +963,7 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
     except Exception:
         recent_session_history = []
 
-    messages = build_messages(payload.user_id, payload.message, context, memories_text, uploads_info, extra_history=recent_session_history)
+    messages = build_messages(payload.user_id, payload.message, context, memories_text, uploads_info, session_id=payload.session_id, extra_history=recent_session_history)
     if should_apply_cot(payload.message):
         messages = inject_cot_hint(messages, build_cot_hint())
     # Auto-intent capture from the user's latest message
@@ -963,7 +972,9 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
     except Exception:
         pass
 
-    reply = cerebras_chat(messages, temperature=0.3, max_tokens=2000)
+    # Increase caps for fuller answers
+    max_tokens = 1024 if len(payload.message) < 120 else 2048
+    reply = cerebras_chat(messages, temperature=0.3, max_tokens=max_tokens)
     # Try to coerce to JSON-first answer and render deterministic markdown
     # Fix word-boundary: single backslash in raw regex literal
     prefer_table = bool(re.search(r"\b(table|tabulate|comparison|vs)\b", payload.message, flags=re.I))
@@ -1008,8 +1019,17 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
 
     # Background memory extraction (feature-flagged)
     # Avoid storing memories when ephemeral uploads are used in this session
-    if (os.getenv("AUTO_MEMORY", "false").lower() in ("1","true","yes")) and not (locals().get("eph_hits")):
-        background_tasks.add_task(extract_and_store_memories, payload.user_id, payload.message, reply, hits)
+    # Always extract memories in the background to keep latency low
+    try:
+        background_tasks.add_task(
+            extract_and_store_memories,
+            payload.user_id,
+            payload.message,
+            formatted_md or reply,
+            all_hits if 'all_hits' in locals() else hits,
+        )
+    except Exception:
+        pass
 
     return ChatOut(
         reply=formatted_md or reply,
@@ -1022,7 +1042,7 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
 def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_api_key)):
     if not payload.message.strip():
         raise HTTPException(400, "message required")
-    
+
     # Graceful degradation: check memory and reject if overloaded
     current_memory = get_memory_usage()
     memory_status = check_memory_and_alert(current_memory)
@@ -1054,17 +1074,17 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
         cached_response = _get_cached_response(payload.message, context_hash)
         
         if cached_response:
-            # Return cached response immediately for better performance
+            # Return cached response immediately in proper SSE JSON format
             def event_gen():
-                yield f"data: {cached_response}\n\n"
-                yield f"data: {{\"type\":\"final_md\",\"content\":\"{cached_response}\"}}\n\n"
+                yield "data: {\"type\":\"start\"}\n\n"
+                final_safe = _escape_json_content(cached_response)
+                yield f"data: {{\"type\":\"final_md\",\"content\":\"{final_safe}\"}}\n\n"
                 yield "data: [DONE]\n\n"
-            
-            return StreamingResponse(event_gen(), media_type="text/plain")
+            return StreamingResponse(event_gen(), media_type="text/event-stream")
         
-        # Prepare messages for LLM
+        # Prepare messages for LLM (streaming: markdown-only to avoid front-end flicker)
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": STREAM_SYSTEM_PROMPT},
             {"role": "user", "content": f"Context:\n{context}\n\nUser message: {payload.message}"}
         ]
         
@@ -1072,10 +1092,10 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
         if payload.session_id:
             try:
                 redis_ops = RedisOps()
-                recent_history = redis_ops.get_chat_history(payload.user_id, payload.session_id, limit=4)
+                recent_history = redis_ops.get_chat_history(payload.user_id, payload.session_id, limit=2)
                 if recent_history:
-                    # Add last 2 exchanges (4 messages) for context
-                    for msg in recent_history[-4:]:
+                    # Add last messages (limit=2)
+                    for msg in recent_history[-2:]:
                         messages.insert(-1, {"role": msg["role"], "content": msg["content"]})
             except Exception as e:
                 print(f"Error loading chat history: {e}")
@@ -1089,11 +1109,14 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
         try:
             # Immediately send a small startup event so clients don't see empty bodies
             yield "data: {\"type\":\"start\"}\n\n"
-            for chunk in cerebras_chat_stream(messages, temperature=0.3, max_tokens=2000):
+            # Increased caps for fuller streamed answers
+            stream_max_tokens = 1024 if len(payload.message) < 120 else 2048
+            for chunk in cerebras_chat_stream(messages, temperature=0.3, max_tokens=stream_max_tokens):
                 if chunk:
                     buffer.append(chunk)
-                    # Ensure each chunk is properly formatted
-                    yield f"data: {chunk}\n\n"
+                    # Emit as markdown delta wrapper (clients append text only)
+                    safe = chunk.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+                    yield f"data: {{\"type\":\"delta\",\"content\":\"{safe}\"}}\n\n"
                 # Heartbeat every ~12s to keep proxies from closing the stream
                 if time.time() - last_ping > 12:
                     last_ping = time.time()

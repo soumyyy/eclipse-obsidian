@@ -408,32 +408,38 @@ export default function Home() {
               
               try {
                 const parsed = JSON.parse(data);
-                
                 // Handle different response types
-                if (parsed.type === 'final_md') {
-                  // Replace the streaming content with final formatted content
-                  setMessages(prev => prev.map((msg, idx) => 
-                    idx === prev.length - 1 ? { ...msg, content: parsed.content, formatted: true } : msg
+                if (parsed.type === 'start') {
+                  // initialize buffer; do nothing for UI
+                  continue;
+                } else if (parsed.type === 'delta') {
+                  const piece = typeof parsed.content === 'string' ? parsed.content : '';
+                  if (piece) {
+                    accumulatedContent += piece;
+                    setMessages(prev => prev.map((msg, idx) =>
+                      idx === prev.length - 1 ? { ...msg, content: accumulatedContent } : msg
+                    ));
+                  }
+                  continue;
+                } else if (parsed.type === 'final_md') {
+                  setMessages(prev => prev.map((msg, idx) =>
+                    idx === prev.length - 1 ? { ...msg, content: parsed.content || accumulatedContent, formatted: true } : msg
                   ));
                   break;
                 } else if (parsed.type === 'error') {
-                  // Handle error responses
-                  setMessages(prev => prev.map((msg, idx) => 
+                  setMessages(prev => prev.map((msg, idx) =>
                     idx === prev.length - 1 ? { ...msg, content: `Error: ${parsed.content}`, formatted: true } : msg
                   ));
                   break;
                 } else if (parsed.type === 'ping') {
-                  // Handle ping messages (ignore them)
+                  continue;
+                } else {
+                  // Unknown typed event: ignore
                   continue;
                 }
               } catch {
-                // Regular streaming content - accumulate it
-                if (data.trim()) {
-                  accumulatedContent += data;
-                  setMessages(prev => prev.map((msg, idx) => 
-                    idx === prev.length - 1 ? { ...msg, content: accumulatedContent } : msg
-                  ));
-                }
+                // Non-JSON chunk: ignore (backend now sends JSON events)
+                continue;
               }
             }
           }
@@ -595,7 +601,7 @@ export default function Home() {
                   </svg>
                 </button>
                 <div className="hidden sm:flex items-center gap-2">
-                  <h1 className="text-lg sm:text-xl font-bold text-white">Eclipse AI</h1>
+                  <h1 className="text-lg sm:text-xl font-bold text-white">Eclipse</h1>
                   <span className="text-xs text-white/40 bg-white/10 px-2 py-1 rounded-lg">Assistant</span>
                 </div>
                 <div className="sm:hidden">

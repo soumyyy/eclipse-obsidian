@@ -48,6 +48,14 @@ export default function Message({ role, content, formatted, attachments, sources
   const isUser = role === "user";
   const normalized = React.useMemo(() => (isUser || formatted ? content : normalizeLLMMarkdown(content)), [content, isUser, formatted]);
 
+  const handleCopy = React.useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(normalized || "");
+    } catch (e) {
+      // noop
+    }
+  }, [normalized]);
+
   // Minimal attachments-only row (no chat bubble)
   if ((attachments && attachments.length > 0) && (!content || content.trim().length === 0)) {
     return (
@@ -154,6 +162,19 @@ export default function Message({ role, content, formatted, attachments, sources
               ))}
             </div>
           </div>
+        )}
+        {/* Floating Copy button (assistant only) */}
+        {!isUser && (normalized && normalized.length > 0) && (
+          <button
+            onClick={handleCopy}
+            aria-label="Copy"
+            className="absolute bottom-2 right-2 p-1.5 rounded-md bg-black/10 hover:bg-white/10 text-white/80 border border-black/10 shadow-sm backdrop-blur-sm"
+            title="Copy"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+              <path d="M16 1H4c-1.1 0-2 .9-2 2v12h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z" />
+            </svg>
+          </button>
         )}
       </div>
     </div>
