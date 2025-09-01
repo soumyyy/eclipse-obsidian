@@ -164,7 +164,8 @@ class RAG:
     def retrieve(self, query: str, user_id: str | None = None):
         # returns only hits (list of {text, path, score, ...})
         # Hybrid: light BM25 via SQLite FTS + dense search; then re-rank by combined score
-        dense_context, dense_hits = self.retriever.build_context(query, k=self.top_k * 6)
+        # Reduced multiplier to prevent memory spikes on complex queries
+        dense_context, dense_hits = self.retriever.build_context(query, k=self.top_k * 3)
         allowed_ids: set[str] | None = None
         if user_id:
             try:
@@ -186,7 +187,7 @@ class RAG:
             if os.path.exists(self._sqlite_path):
                 con = sqlite3.connect(self._sqlite_path)
                 cur = con.cursor()
-                cur.execute("SELECT id, relpath, text FROM chunks_fts WHERE chunks_fts MATCH ? LIMIT ?", (query, self.top_k * 12))
+                cur.execute("SELECT id, relpath, text FROM chunks_fts WHERE chunks_fts MATCH ? LIMIT ?", (query, self.top_k * 6))
                 raw_rows = cur.fetchall()
                 keyword_hits = []
                 for (rid, rel, txt) in raw_rows:
@@ -202,8 +203,8 @@ class RAG:
             self._ensure_bm25()
             if self._bm25 is not None:
                 scores = self._bm25.get_scores(query.split())
-                # Take top N by score
-                topN = min(len(scores), self.top_k * 12)
+                # Take top N by score (reduced to prevent memory spikes)
+                topN = min(len(scores), self.top_k * 6)
                 idxs = np.argsort(-scores)[:topN]
                 for rank, i in enumerate(idxs.tolist(), start=1):
                     rid = self._bm25_ids[i]
@@ -258,7 +259,7 @@ class RAG:
             # Skip reranker for very short queries to reduce latency
             short = len((query or "").split()) <= 3
             if self._reranker is not None and filtered and not short:
-                topN = min(len(filtered), self.top_k * 12)
+                topN = min(len(filtered), self.top_k * 6)
                 cand = filtered[:topN]
                 pairs = [(query, h.get("text") or "") for h in cand]
                 ce_scores = self._reranker.predict(pairs).tolist()

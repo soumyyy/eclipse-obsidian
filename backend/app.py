@@ -7,6 +7,14 @@ import numpy as np
 from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
+
+# Memory monitoring
+import psutil
+def get_memory_usage():
+    process = psutil.Process(os.getpid())
+    return process.memory_info().rss / 1024 / 1024  # MB
+
+MEMORY_LIMIT_MB = 1800  # Leave 200MB headroom in 2GB VPS
 # --------------------------------------
 
 from typing import List, Dict, Optional, Tuple, Any
@@ -967,6 +975,12 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
 def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_api_key)):
     if not payload.message.strip():
         raise HTTPException(400, "message required")
+    
+    # Memory protection: check before processing complex queries
+    current_memory = get_memory_usage()
+    if current_memory > MEMORY_LIMIT_MB:
+        print(f"Memory limit exceeded: {current_memory:.1f}MB > {MEMORY_LIMIT_MB}MB")
+        raise HTTPException(503, "Server memory limit exceeded, please try a simpler query")
 
     try:
         context, all_hits, hits, file_context, _ = _build_context_bundle(
