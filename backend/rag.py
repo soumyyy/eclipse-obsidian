@@ -153,9 +153,9 @@ class RAG:
         if self._reranker is not None:
             return
         try:
-            # Upgraded re-ranker for better ranking quality
-            # ms-marco-MiniLM-L-12-v2 is ~130MB, better than L-6-v2 but still fits in 2GB VPS
-            model_name = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-12-v2")
+            # Use lightweight re-ranker that fits comfortably in 2GB VPS
+            # ms-marco-MiniLM-L-6-v2 is only ~90MB, good balance of quality vs memory
+            model_name = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
             self._reranker = CrossEncoder(model_name)
         except Exception as e:
             print(f"Failed to load re-ranker: {e}")
