@@ -30,7 +30,7 @@ def smart_detect_task(message: str) -> Optional[str]:
 
     # AI-powered detection for implicit tasks
     try:
-        from llm_cerebras import cerebras_chat_with_model
+        from clients.llm_cerebras import cerebras_chat_with_model
 
         system_prompt = (
             "You are a task detection expert. Analyze the user's message and determine "

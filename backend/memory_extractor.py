@@ -156,19 +156,9 @@ def _detect_memory_trigger(user_msg: str) -> bool:
 
 def _should_extract_memory(user_msg: str, assistant_reply: str) -> bool:
     """
-    Determine if we should extract memories from this conversation turn.
-    Only extract when user explicitly requests or provides personal information.
+    Always attempt extraction when there's a non-empty user message.
     """
-    # Always extract if user explicitly requests
-    if _detect_task_trigger(user_msg):
-        return True
-    
-    # Extract if user provides personal information
-    if _detect_memory_trigger(user_msg):
-        return True
-    
-    # Don't extract from random LLM responses
-    return False
+    return bool((user_msg or "").strip())
 
 
 def extract_memories(user_id: str, user_msg: str, assistant_reply: str, recent_turns: Optional[List[Dict]] = None, top_snippets: Optional[List[str]] = None) -> List[Dict[str, Any]]:
@@ -296,9 +286,9 @@ Return ONLY valid JSON matching this schema:
 
 
 def store_extracted_memories(user_id: str, items: List[Dict[str, Any]], task_triggered: bool = False) -> int:
-    # Mode: 'review' (default), 'auto' (save everything), 'hybrid' (auto-save facts/tasks/preferences)
-    mode = (os.getenv("AUTO_MEMORY_MODE") or "review").strip().lower()
-    min_conf = float(os.getenv("AUTO_MEMORY_MIN_CONF", "0.7"))  # Increased from 0.4
+    # Always auto-save by default
+    mode = "auto"
+    min_conf = 0.5
     recent = recall_memories(user_id, limit=200)
     existing_contents = {r[3] if isinstance(r, (list, tuple)) else (r.get("content") if isinstance(r, dict) else str(r)) for r in (recent or [])}
     stored = 0

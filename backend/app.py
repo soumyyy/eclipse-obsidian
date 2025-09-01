@@ -1153,6 +1153,13 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                     except Exception as e:
                         print(f"Error storing messages in Redis: {e}")
 
+                # Background memory extraction (streaming as well)
+                try:
+                    if os.getenv("AUTO_MEMORY", "true").lower() in ("1","true","yes") and not (locals().get("eph_hits")):
+                        background_tasks.add_task(extract_and_store_memories, payload.user_id, payload.message, formatted_md or full, all_hits if 'all_hits' in locals() else hits)
+                except Exception as e:
+                    print(f"Streaming memory extraction skipped: {e}")
+
                 # Create tasks if requested (parity with non-stream endpoint)
                 try:
                     if payload.save_task and payload.save_task.strip():
