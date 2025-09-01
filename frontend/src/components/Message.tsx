@@ -22,7 +22,8 @@ function normalizeLLMMarkdown(input: string): string {
   // Minimal: fix invisible characters and mid-word breaks; keep structure
   text = text.replace(/[\u00A0\u202F\u2007]/g, " ");
   text = text.replace(/[\u200B-\u200D\u2060\u00AD]/g, "");
-  text = text.replace(/([A-Za-z0-9])\s*\n\s*([A-Za-z0-9])/g, "$1$2");
+  // If a newline splits words, rejoin with a space (avoid concatenating words)
+  text = text.replace(/([A-Za-z0-9])[ \t]*\n[ \t]*([A-Za-z0-9])/g, "$1 $2");
   text = text.replace(/\n{3,}/g, "\n\n");
   return text.trim();
 }

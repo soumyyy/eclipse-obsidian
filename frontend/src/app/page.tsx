@@ -384,7 +384,9 @@ export default function Home() {
       
       const decoder = new TextDecoder();
       let buffer = "";
-      let accumulatedContent = "";
+      let accumulatedContent = ""; // live stream buffer
+      let inFinal = false;
+      let finalBuffer = ""; // replaces live buffer once 'final' starts
       
       try {
         while (true) {
@@ -395,7 +397,12 @@ export default function Home() {
           const lines = buffer.split('\n');
           buffer = lines.pop() || '';
           
+          let currentEvent: string | null = null;
           for (const line of lines) {
+            if (line.startsWith('event: ')) {
+              currentEvent = line.slice(7).trim();
+              continue;
+            }
             if (line.startsWith('data: ')) {
               const data = line.slice(6);
               if (data === '[DONE]') {
@@ -405,40 +412,29 @@ export default function Home() {
                 ));
                 break;
               }
-              
-              try {
-                const parsed = JSON.parse(data);
-                // Handle different response types
-                if (parsed.type === 'start') {
-                  // initialize buffer; do nothing for UI
-                  continue;
-                } else if (parsed.type === 'delta') {
-                  const piece = typeof parsed.content === 'string' ? parsed.content : '';
-                  if (piece) {
-                    accumulatedContent += piece;
-                    setMessages(prev => prev.map((msg, idx) =>
-                      idx === prev.length - 1 ? { ...msg, content: accumulatedContent } : msg
-                    ));
-                  }
-                  continue;
-                } else if (parsed.type === 'final_md') {
-                  setMessages(prev => prev.map((msg, idx) =>
-                    idx === prev.length - 1 ? { ...msg, content: parsed.content || accumulatedContent, formatted: true } : msg
+              // Evented SSE handling (raw markdown)
+              if (currentEvent === 'start') {
+                continue;
+              } else if (currentEvent === 'delta') {
+                if (!inFinal && data.length && data !== 'ok') {
+                  // Reinsert newline per SSE data line to preserve original line breaks
+                  accumulatedContent += data + '\n';
+                  setMessages(prev => prev.map((msg, idx) => 
+                    idx === prev.length - 1 ? { ...msg, content: accumulatedContent } : msg
                   ));
-                  break;
-                } else if (parsed.type === 'error') {
-                  setMessages(prev => prev.map((msg, idx) =>
-                    idx === prev.length - 1 ? { ...msg, content: `Error: ${parsed.content}`, formatted: true } : msg
-                  ));
-                  break;
-                } else if (parsed.type === 'ping') {
-                  continue;
-                } else {
-                  // Unknown typed event: ignore
-                  continue;
                 }
-              } catch {
-                // Non-JSON chunk: ignore (backend now sends JSON events)
+              } else if (currentEvent === 'final') {
+                if (!inFinal) { inFinal = true; finalBuffer = ""; }
+                if (data.length && data !== 'ok') {
+                  finalBuffer += data + '\n';
+                  setMessages(prev => prev.map((msg, idx) => 
+                    idx === prev.length - 1 ? { ...msg, content: finalBuffer.trimEnd() } : msg
+                  ));
+                }
+              } else if (currentEvent === 'ping') {
+                continue;
+              } else {
+                // Unknown event; ignore
                 continue;
               }
             }

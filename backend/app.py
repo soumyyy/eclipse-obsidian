@@ -1074,11 +1074,14 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
         cached_response = _get_cached_response(payload.message, context_hash)
         
         if cached_response:
-            # Return cached response immediately in proper SSE JSON format
+            # Return cached response immediately as evented SSE with raw markdown
             def event_gen():
-                yield "data: {\"type\":\"start\"}\n\n"
-                final_safe = _escape_json_content(cached_response)
-                yield f"data: {{\"type\":\"final_md\",\"content\":\"{final_safe}\"}}\n\n"
+                yield "event: start\n"
+                yield "data: ok\n\n"
+                yield "event: final\n"
+                for part in (cached_response or "").split("\n"):
+                    yield f"data: {part}\n"
+                yield "\n"
                 yield "data: [DONE]\n\n"
             return StreamingResponse(event_gen(), media_type="text/event-stream")
         
@@ -1108,15 +1111,18 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
         last_ping = time.time()
         try:
             # Immediately send a small startup event so clients don't see empty bodies
-            yield "data: {\"type\":\"start\"}\n\n"
+            yield "event: start\n"
+            yield "data: ok\n\n"
             # Increased caps for fuller streamed answers
             stream_max_tokens = 1024 if len(payload.message) < 120 else 2048
             for chunk in cerebras_chat_stream(messages, temperature=0.3, max_tokens=stream_max_tokens):
                 if chunk:
                     buffer.append(chunk)
-                    # Emit as markdown delta wrapper (clients append text only)
-                    safe = chunk.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
-                    yield f"data: {{\"type\":\"delta\",\"content\":\"{safe}\"}}\n\n"
+                    # Emit raw markdown in evented SSE (no JSON)
+                    yield "event: delta\n"
+                    for part in chunk.split("\n"):
+                        yield f"data: {part}\n"
+                    yield "\n"
                 # Heartbeat every ~12s to keep proxies from closing the stream
                 if time.time() - last_ping > 12:
                     last_ping = time.time()
@@ -1137,15 +1143,8 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                 except Exception:
                     pass
                 
-                # Format to JSON-first → markdown (always do this for response)
-                prefer_table = bool(re.search(r"\b(table|tabulate|comparison|vs)\b", payload.message, flags=re.I))
-                prefer_compact = bool(re.fullmatch(r"\s*(hi|hello|hey|yo|hola)[.!?]?\s*", (payload.message or ""), flags=re.I))
-                from formatting import ensure_json_and_markdown as _shared_ensure
-                result = _shared_ensure(full, prefer_table=prefer_table, prefer_compact=prefer_compact)
-                if isinstance(result, tuple) and len(result) == 2:
-                    ans, formatted_md = result
-                else:
-                    ans, formatted_md = None, full
+                # Use accumulated buffer directly as final markdown (no extra reformat pass)
+                formatted_md = full
                 
                 # Store messages in Redis if session_id is provided
                 if payload.session_id:
@@ -1196,9 +1195,11 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                 except Exception as e:
                     print(f"Task creation skipped: {e}")
                 
-                # Emit final formatted markdown with proper escaping
-                final_content = _escape_json_content(formatted_md or full)
-                yield f"data: {{\"type\":\"final_md\",\"content\":\"{final_content}\"}}\n\n"
+                # Emit final markdown via evented SSE
+                yield "event: final\n"
+                for part in (formatted_md or full).split("\n"):
+                    yield f"data: {part}\n"
+                yield "\n"
                 yield "data: [DONE]\n\n"
             except Exception as e:
                 print(f"Error in final processing: {e}")
