@@ -23,6 +23,24 @@ from services.vpsmemoryguard import (
     get_system_memory,
     force_gc as force_garbage_collection,
 )
+
+# Lightweight cached memory sampler to avoid psutil on hot path
+_last_mem_sample = {"ts": 0.0, "val": 0.0, "status": {"status": "ok", "system_memory": {}}}
+def get_cached_memory_status():
+    try:
+        now = time.time()
+        if now - _last_mem_sample["ts"] > 10:
+            mem = get_memory_usage()
+            status = check_memory_and_alert(mem)
+            _last_mem_sample["ts"] = now
+            _last_mem_sample["val"] = mem
+            _last_mem_sample["status"] = status
+        return _last_mem_sample["val"], _last_mem_sample["status"]
+    except Exception:
+        # Fallback to direct call if cache fails
+        mem = get_memory_usage()
+        status = check_memory_and_alert(mem)
+        return mem, status
 from services.task_management import smart_detect_task as _smart_detect_task
 from services.task_management import auto_capture_intents as _auto_capture_intents
 # --------------------------------------
@@ -52,6 +70,29 @@ import requests
 
 # Response caching via Redis for multi-worker safety
 CACHE_TTL = 300  # 5 minutes
+
+# In-process prompt-only LRU (very small, ultra-fast repeat path)
+from collections import OrderedDict
+_PROMPT_LRU_CAP = 32
+_prompt_lru: "OrderedDict[str, str]" = OrderedDict()
+
+def _prompt_lru_get(key: str) -> Optional[str]:
+    try:
+        if key in _prompt_lru:
+            _prompt_lru.move_to_end(key)
+            return _prompt_lru[key]
+    except Exception:
+        pass
+    return None
+
+def _prompt_lru_set(key: str, value: str) -> None:
+    try:
+        _prompt_lru[key] = value
+        _prompt_lru.move_to_end(key)
+        while len(_prompt_lru) > _PROMPT_LRU_CAP:
+            _prompt_lru.popitem(last=False)
+    except Exception:
+        pass
 
 def _cache_key(query: str, context_hash: str) -> str:
     seed = f"{query}:{context_hash}".encode()
@@ -247,7 +288,8 @@ You may use the provided CONTEXT, MEMORIES and UPLOADS to build the JSON content
 STREAM_SYSTEM_PROMPT = (
     "You are an assistant responding in clean Markdown only. "
     "Do not output JSON, code fences with JSON, or schemas. "
-    "Keep responses concise and readable. Use headings, lists, and code blocks only when helpful."
+    "Keep responses concise and readable. Use headings, lists, and code blocks only when helpful. "
+    "Do not add an end-of-message recap or duplicated summary unless explicitly requested."
 )
 
 def build_messages(user_id: str, user_msg: str, context: str, memories_text: str, uploads_info: Optional[str] = None, session_id: Optional[str] = None, extra_history: Optional[List[Dict]] = None):
@@ -436,92 +478,8 @@ def _ephemeral_recent(session_id: Optional[str], max_items: int = 3) -> List[Dic
 
 # ----------------- Semantic memory retrieval (on-the-fly) -----------------
 def _semantic_memory_retrieve(user_id: str, query: str, limit: int = 5):
-    try:
-        # Try to use RAG system if available
-        rag = get_retriever()
-        embed_fn = rag.embed_fn
-        qv = embed_fn(query)[0].astype(np.float32)
-        
-        # Get more memories for better selection
-        mems = list_memories(user_id, limit=500)
-        if not mems:
-            return []
-        
-        # Filter memories by relevance to current query
-        relevant_mems = []
-        for m in mems:
-            content = m.get("content", "").lower()
-            query_lower = query.lower()
-            
-            # Check for direct keyword matches
-            if any(word in content for word in query_lower.split() if len(word) > 3):
-                relevant_mems.append((m, 1.5))  # Boost direct matches
-            
-            # Check for semantic similarity
-            relevant_mems.append((m, 0.0))
-        
-        if not relevant_mems:
-            return []
-        
-        # Get embeddings for relevant memories
-        texts = [m[0].get("content", "") for m in relevant_mems]
-        vecs = embed_fn(texts)
-        scores = vecs @ qv
-        
-        # Combine keyword relevance with semantic similarity
-        final_scores = []
-        for i, (mem, keyword_boost) in enumerate(relevant_mems):
-            semantic_score = float(scores[i])
-            final_score = semantic_score + keyword_boost
-            final_scores.append((mem, final_score))
-        
-        # Sort by combined score and take top results
-        final_scores.sort(key=lambda x: x[1], reverse=True)
-        
-        out = []
-        for rank, (mem, score) in enumerate(final_scores[:limit]):
-            out.append({
-                "rank": rank + 1,
-                "score": score,
-                "text": mem.get("content", ""),
-                "path": f"(memory:{mem.get('type','note')})",
-                "id": f"mem::{mem.get('id')}",
-            })
-        return out
-    except Exception as e:
-        print(f"RAG system not available for memory retrieval: {e}")
-        # Fallback: simple keyword-based memory search
-        try:
-            mems = list_memories(user_id, limit=limit)
-            if not mems:
-                return []
-            
-            query_lower = query.lower()
-            relevant_mems = []
-            
-            for mem in mems:
-                content = mem.get("content", "").lower()
-                # Count matching words
-                score = sum(1 for word in query_lower.split() if word in content and len(word) > 2)
-                if score > 0:
-                    relevant_mems.append((mem, score))
-            
-            # Sort by score and return top results
-            relevant_mems.sort(key=lambda x: x[1], reverse=True)
-            
-            out = []
-            for rank, (mem, score) in enumerate(relevant_mems[:limit]):
-                out.append({
-                    "rank": rank + 1,
-                    "score": float(score),
-                    "text": mem.get("content", ""),
-                    "path": f"(memory:{mem.get('type','note')})",
-                    "id": f"mem::{mem.get('id')}",
-                })
-            return out
-        except Exception as e2:
-            print(f"Fallback memory retrieval also failed: {e2}")
-            return []
+    # Disabled for latency: avoid per-request memory embeddings
+    return []
 
 # ----------------- Query expansion + RRF across variants -----------------
 def _expand_queries(q: str) -> List[str]:
@@ -757,8 +715,7 @@ def health():
 @app.get("/memory")
 def memory_status():
     """Memory monitoring endpoint"""
-    current_memory = get_memory_usage()
-    memory_status = check_memory_and_alert(current_memory)
+    current_memory, memory_status = get_cached_memory_status()
     
     return {
         "status": memory_status["status"],
@@ -876,8 +833,7 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
         raise HTTPException(400, "message required")
 
     # Memory check for non-streaming endpoint too
-    current_memory = get_memory_usage()
-    memory_status = check_memory_and_alert(current_memory)
+    current_memory, memory_status = get_cached_memory_status()
     
     if memory_status["should_reject"]:
         force_garbage_collection()
@@ -905,7 +861,7 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
         structured = []
     
     # Get recent conversation history for better context
-    recent_history = _get_history(payload.user_id, payload.session_id)
+    recent_history = _get_history(payload.user_id, payload.session_id, limit=2)
     conversation_context = ""
     if recent_history and len(recent_history) > 2:
         # Include last few exchanges for context
@@ -1069,6 +1025,19 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
             payload.user_id, payload.message, payload.session_id
         )
         
+        # Check fast prompt-only LRU first
+        fast_cached = _prompt_lru_get(payload.message.strip())
+        if fast_cached:
+            def event_gen_fast():
+                yield "event: start\n"
+                yield "data: ok\n\n"
+                yield "event: final\n"
+                for part in (fast_cached or "").split("\n"):
+                    yield f"data: {part}\n"
+                yield "\n"
+                yield "data: [DONE]\n\n"
+            return StreamingResponse(event_gen_fast(), media_type="text/event-stream")
+
         # Check cache for similar queries
         context_hash = _get_context_hash(all_hits, file_context)
         cached_response = _get_cached_response(payload.message, context_hash)
@@ -1084,7 +1053,7 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                 yield "\n"
                 yield "data: [DONE]\n\n"
             return StreamingResponse(event_gen(), media_type="text/event-stream")
-        
+            
         # Prepare messages for LLM (streaming: markdown-only to avoid front-end flicker)
         messages = [
             {"role": "system", "content": STREAM_SYSTEM_PROMPT},
@@ -1126,7 +1095,8 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                 # Heartbeat every ~12s to keep proxies from closing the stream
                 if time.time() - last_ping > 12:
                     last_ping = time.time()
-                    yield "data: {\"type\":\"ping\"}\n\n"
+                    yield "event: ping\n"
+                    yield "data: ok\n\n"
         except Exception as e:
             print(f"Error in streaming: {e}")
             # Send error response
@@ -1171,6 +1141,8 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                         
                         # Cache the response for future similar queries
                         _cache_response(payload.message, context_hash, formatted_md or full)
+                        # Prompt LRU for ultra-fast repeats
+                        _prompt_lru_set(payload.message.strip(), formatted_md or full)
                         
                     except Exception as e:
                         print(f"Error storing messages in Redis: {e}")

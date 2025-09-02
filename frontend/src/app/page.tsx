@@ -44,6 +44,31 @@ export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const streamingRef = useRef(false);
+  const typewriterRef = useRef<{ timer: ReturnType<typeof setInterval> | null; buffer: string }>({ timer: null, buffer: "" });
+
+  const stopTypewriter = () => {
+    try { if (typewriterRef.current.timer) { clearInterval(typewriterRef.current.timer); } } catch {}
+    typewriterRef.current.timer = null;
+  };
+
+  const ensureTypewriter = () => {
+    if (typewriterRef.current.timer) return;
+    // Fast cadence typewriter effect
+    typewriterRef.current.timer = setInterval(() => {
+      const revealCount = 4; // chars per tick
+      if (typewriterRef.current.buffer.length > 0) {
+        const chunk = typewriterRef.current.buffer.slice(0, revealCount);
+        typewriterRef.current.buffer = typewriterRef.current.buffer.slice(revealCount);
+        setMessages(prev => prev.map((msg, idx) => 
+          idx === prev.length - 1 ? { ...msg, content: (msg.content || "") + chunk } : msg
+        ));
+      } else if (!streamingRef.current) {
+        // Stream finished and buffer drained
+        stopTypewriter();
+      }
+    }, 25);
+  };
   
   // Generate deterministic session ID based on time (same across all devices)
   const [sessionId] = useState<string>(() => {
@@ -360,6 +385,9 @@ export default function Home() {
     
     // Start loading state
     setLoading(true);
+    streamingRef.current = true;
+    stopTypewriter();
+    typewriterRef.current.buffer = "";
     
     try {
       const response = await apiChatStream({ user_id: "soumya", message: userMessage, session_id: activeSession });
@@ -384,9 +412,9 @@ export default function Home() {
       
       const decoder = new TextDecoder();
       let buffer = "";
-      let accumulatedContent = ""; // live stream buffer
+      let accumulatedContent = ""; // still used for fallback error
       let inFinal = false;
-      let finalBuffer = ""; // replaces live buffer once 'final' starts
+      let finalBuffer = ""; // accumulate full final for safety
       
       try {
         while (true) {
@@ -417,19 +445,22 @@ export default function Home() {
                 continue;
               } else if (currentEvent === 'delta') {
                 if (!inFinal && data.length && data !== 'ok') {
-                  // Reinsert newline per SSE data line to preserve original line breaks
-                  accumulatedContent += data + '\n';
-                  setMessages(prev => prev.map((msg, idx) => 
-                    idx === prev.length - 1 ? { ...msg, content: accumulatedContent } : msg
-                  ));
+                  // Buffer for typewriter reveal
+                  typewriterRef.current.buffer += data + '\n';
+                  ensureTypewriter();
                 }
               } else if (currentEvent === 'final') {
-                if (!inFinal) { inFinal = true; finalBuffer = ""; }
+                if (!inFinal) { inFinal = true; finalBuffer = ""; 
+                  // Mark formatted to bypass normalizer early
+                  setMessages(prev => prev.map((msg, idx) => 
+                    idx === prev.length - 1 ? { ...msg, formatted: true } : msg
+                  ));
+                }
                 if (data.length && data !== 'ok') {
                   finalBuffer += data + '\n';
-                  setMessages(prev => prev.map((msg, idx) => 
-                    idx === prev.length - 1 ? { ...msg, content: finalBuffer.trimEnd() } : msg
-                  ));
+                  // Continue typewriter reveal for final too
+                  typewriterRef.current.buffer += data + '\n';
+                  ensureTypewriter();
                 }
               } else if (currentEvent === 'ping') {
                 continue;
@@ -463,10 +494,16 @@ export default function Home() {
         }
       } finally {
         setLoading(false);
+        streamingRef.current = false;
+        // If buffer is empty, stop now; otherwise let typewriter finish draining
+        if (!typewriterRef.current.buffer.length) {
+          stopTypewriter();
+        }
       }
     } catch (error) {
       console.error("Error in chat stream:", error);
       setLoading(false);
+      streamingRef.current = false;
       
       // Show error message
       const errorMessage: ChatMessage = {
