@@ -140,10 +140,15 @@ def embed_texts(texts: List[str], model: SentenceTransformer, batch_size=64) -> 
         embs.append(vecs.astype(np.float32))
     return np.vstack(embs) if embs else np.zeros((0, 384), dtype=np.float32)
 
-def build_faiss_index(embs: np.ndarray) -> faiss.Index:
-    # cosine similarity via inner product on normalized vectors
+def build_faiss_index(embs: np.ndarray, hnsw_m: int = 32, ef_construction: int = 200) -> faiss.Index:
+    # Cosine via L2 distance on normalized vectors; HNSW for fast ANN
     faiss.normalize_L2(embs)
-    index = faiss.IndexFlatIP(embs.shape[1])
+    d = embs.shape[1]
+    index = faiss.IndexHNSWFlat(d, hnsw_m)
+    try:
+        index.hnsw.efConstruction = ef_construction
+    except Exception:
+        pass
     index.add(embs)
     return index
 

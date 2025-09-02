@@ -442,6 +442,11 @@ export default function Home() {
               }
               // Evented SSE handling (raw markdown)
               if (currentEvent === 'start') {
+                // Start optimistic typewriter while waiting for first token
+                if (!inFinal) {
+                  typewriterRef.current.buffer += '…';
+                  ensureTypewriter();
+                }
                 continue;
               } else if (currentEvent === 'delta') {
                 if (!inFinal && data.length && data !== 'ok') {

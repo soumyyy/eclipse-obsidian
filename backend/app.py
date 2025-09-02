@@ -354,7 +354,7 @@ def get_retriever():
         retr, embed_fn = make_faiss_retriever(
             index_path=str(Path(__file__).resolve().parent / "data" / "index.faiss"),
             docs_path=str(Path(__file__).resolve().parent / "data" / "docs.pkl"),
-            model_name="sentence-transformers/all-MiniLM-L12-v2",
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
         )
         _rag = RAG(retriever=retr, embed_fn=embed_fn, top_k=5)
     return _rag
@@ -542,23 +542,33 @@ def _build_context_bundle(user_id: str, message: str, session_id: Optional[str])
     Build retrieval context used by both /chat and /chat/stream.
     Returns (context, all_hits, dense_hits, file_context, uploads_info)
     """
+    t_ctx_start = time.perf_counter()
     retriever = get_retriever()
     # Keep retrieval light for speed: single variant, small top_k
     variants = [message]
     dense_lists: List[List[Dict]] = []
+    t_dense_start = time.perf_counter()
     for vq in variants[:1]:
         _, hlist = retriever.build_context(vq, user_id=user_id)
         dense_lists.append(hlist)
     dense_hits = _rrf_merge(dense_lists, top_k=3)
+    t_dense_ms = round((time.perf_counter() - t_dense_start) * 1000, 1)
 
     # Skip semantic memory pass for very short prompts
+    t_mem_start = time.perf_counter()
     mem_sem_hits = _semantic_memory_retrieve(user_id, message, limit=3) if len(message.split()) >= 15 else []
+    t_mem_ms = round((time.perf_counter() - t_mem_start) * 1000, 1)
+    t_eph_start = time.perf_counter()
     eph_hits = _ephemeral_retrieve(session_id, message, top_k=5)
+    t_eph_ms = round((time.perf_counter() - t_eph_start) * 1000, 1)
     # Final RRF merge across sources, then build context
+    t_rrf_start = time.perf_counter()
     all_hits = _rrf_merge([eph_hits, mem_sem_hits, dense_hits], top_k=5)
+    t_rrf_ms = round((time.perf_counter() - t_rrf_start) * 1000, 1)
 
     # Include uploaded file content in context if available (relevant only)
     file_context = ""
+    t_filectx_start = time.perf_counter()
     if session_id and session_id in EPHEMERAL_SESSIONS:
         try:
             items = EPHEMERAL_SESSIONS[session_id].get("items") or []
@@ -597,6 +607,28 @@ def _build_context_bundle(user_id: str, message: str, session_id: Optional[str])
         pass
 
     context = "\n\n".join(context_parts) if context_parts else ""
+    t_filectx_ms = round((time.perf_counter() - t_filectx_start) * 1000, 1)
+    t_ctx_total_ms = round((time.perf_counter() - t_ctx_start) * 1000, 1)
+    try:
+        print(json.dumps({
+            "metric": "context_timing",
+            "dense_ms": t_dense_ms,
+            "mem_ms": t_mem_ms,
+            "eph_ms": t_eph_ms,
+            "rrf_ms": t_rrf_ms,
+            "filectx_ms": t_filectx_ms,
+            "ctx_total_ms": t_ctx_total_ms,
+            "counts": {
+                "dense": len(dense_hits or []),
+                "mem": len(mem_sem_hits or []),
+                "eph": len(eph_hits or []),
+                "all": len(all_hits or [])
+            },
+            "msg_len": len(message or ""),
+            "session": session_id or "-"
+        }))
+    except Exception:
+        pass
 
     uploads_info = None
     if session_id and session_id in EPHEMERAL_SESSIONS:
@@ -702,6 +734,26 @@ def bootstrap():
         print("Startup bootstrap complete.")
     except Exception as e:
         print(f"[startup] Non-fatal: {e}")
+
+    # Keep model warm by sending small periodic pings
+    try:
+        import asyncio
+        async def _keep_warm_loop():
+            while True:
+                try:
+                    await asyncio.sleep(180)  # every 3 minutes
+                    ping_msgs = [
+                        {"role": "system", "content": "You are a helpful assistant. Reply with 'ok'."},
+                        {"role": "user", "content": "ping"}
+                    ]
+                    # Fire-and-forget minimal call
+                    _ = cerebras_chat(ping_msgs, temperature=0.0, max_tokens=2)
+                except Exception:
+                    pass
+        import asyncio as _aio
+        _aio.create_task(_keep_warm_loop())
+    except Exception:
+        pass
 
 # ----------------- Health -----------------
 @app.get("/")
@@ -844,6 +896,136 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
                 f"Server temporarily overloaded ({new_memory:.1f}MB). Please try again in a moment or use a simpler query."
             )
 
+    # Speculative two-stage streaming (feature-flagged)
+    if os.getenv("SPEC_STREAM_ENABLED", "true").lower() in ("1", "true", "yes"):
+        import asyncio, threading
+        def make_spec_sse():
+            async def sse_gen():
+                buffer: list[str] = []
+                queue: "asyncio.Queue[str]" = asyncio.Queue()
+                flags = {"s1_done": False, "s2_done": False}
+                state: dict[str, object] = {"all_hits": [], "hits": [], "context_hash": None}
+                loop = asyncio.get_running_loop()
+
+                def produce_stage1_sync():
+                    try:
+                        # Minimal messages for fast TTFB
+                        msgs = [
+                            {"role": "system", "content": STREAM_SYSTEM_PROMPT},
+                            {"role": "user", "content": payload.message},
+                        ]
+                        if payload.session_id:
+                            try:
+                                rops = RedisOps()
+                                rh = rops.get_chat_history(payload.user_id, payload.session_id, limit=2)
+                                if rh:
+                                    for m in rh[-2:]:
+                                        msgs.insert(-1, {"role": m.get("role", "user"), "content": m.get("content", "")})
+                            except Exception:
+                                pass
+                        mtoks = 256 if len(payload.message) < 120 else 512
+                        for chunk in cerebras_chat_stream(msgs, temperature=0.3, max_tokens=mtoks):
+                            if chunk:
+                                buffer.append(chunk)
+                                loop.call_soon_threadsafe(queue.put_nowait, chunk)
+                    finally:
+                        flags["s1_done"] = True
+
+                def produce_stage2_sync():
+                    try:
+                        # Build retrieval context (may take time)
+                        ctx, all_hits, hits, file_ctx, _ = _build_context_bundle(payload.user_id, payload.message, payload.session_id)
+                        state["all_hits"] = all_hits
+                        state["hits"] = hits
+                        # Gate: only continue if we actually found useful context
+                        if not ctx or not str(ctx).strip():
+                            return
+                        cont_msgs = [
+                            {"role": "system", "content": STREAM_SYSTEM_PROMPT},
+                            {"role": "assistant", "content": "".join(buffer)},
+                            {"role": "user", "content": f"Use this additional context if relevant and continue briefly.\n\nContext:\n{ctx}"},
+                        ]
+                        for chunk in cerebras_chat_stream(cont_msgs, temperature=0.3, max_tokens=256):
+                            if chunk:
+                                buffer.append(chunk)
+                                loop.call_soon_threadsafe(queue.put_nowait, chunk)
+                    except Exception:
+                        return
+                    finally:
+                        flags["s2_done"] = True
+
+                # Kick off producers in threads (to avoid blocking event loop)
+                t1 = threading.Thread(target=produce_stage1_sync, daemon=True)
+                t2 = threading.Thread(target=produce_stage2_sync, daemon=True)
+                t1.start(); t2.start()
+
+                # SSE preamble
+                yield "event: start\n"; yield "data: ok\n\n"
+                last_ping = time.time()
+                try:
+                    while True:
+                        try:
+                            item = await asyncio.wait_for(queue.get(), timeout=3.0)
+                            yield "event: delta\n"
+                            for part in str(item).split("\n"):
+                                yield f"data: {part}\n"
+                            yield "\n"
+                            queue.task_done()
+                        except asyncio.TimeoutError:
+                            pass
+                        # Heartbeat
+                        if time.time() - last_ping > 12:
+                            last_ping = time.time()
+                            yield "event: ping\n"; yield "data: ok\n\n"
+                        # Exit when both producers done and queue empty
+                        if flags["s1_done"] and flags["s2_done"] and queue.empty():
+                            break
+                finally:
+                    full = "".join(buffer)
+                    # Append to history and cache
+                    _append_history(payload.user_id, "user", payload.message, payload.session_id)
+                    try:
+                        _auto_capture_intents(payload.user_id, payload.message)
+                    except Exception:
+                        pass
+                    if payload.session_id:
+                        try:
+                            rops = RedisOps()
+                            rops.store_chat_message(payload.user_id, payload.session_id, {"role": "user", "content": payload.message, "timestamp": datetime.utcnow().isoformat() + "Z"})
+                            _append_history(payload.user_id, "assistant", full, payload.session_id)
+                            rops.store_chat_message(payload.user_id, payload.session_id, {"role": "assistant", "content": full, "timestamp": datetime.utcnow().isoformat() + "Z"})
+                            _prompt_lru_set(payload.message.strip(), full)
+                        except Exception:
+                            pass
+                    # Background memory extraction
+                    try:
+                        background_tasks.add_task(
+                            extract_and_store_memories,
+                            payload.user_id,
+                            payload.message,
+                            full,
+                            state.get("all_hits") or state.get("hits") or [],
+                        )
+                    except Exception:
+                        pass
+                    yield "event: final\n"
+                    for part in full.split("\n"):
+                        yield f"data: {part}\n"
+                    yield "\n"
+                    yield "data: [DONE]\n\n"
+            return sse_gen()
+
+        return StreamingResponse(
+            make_spec_sse(),
+            media_type="text/event-stream",
+            background=background_tasks,
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     # Retrieve context from FAISS + ephemeral + semantic memories
     try:
         context, all_hits, hits, file_context, uploads_info = _build_context_bundle(
@@ -912,7 +1094,18 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
     try:
         if payload.session_id:
             redis_ops = RedisOps()
+            import time as _t
+            _t0 = _t.perf_counter()
             rh = redis_ops.get_chat_history(payload.user_id, payload.session_id, limit=6)
+            try:
+                print(json.dumps({
+                    "metric": "redis_timing",
+                    "op": "get_chat_history",
+                    "ms": round((_t.perf_counter() - _t0) * 1000, 1),
+                    "session": payload.session_id
+                }))
+            except Exception:
+                pass
             # keep last 4 messages (2 turns) and map to role/content
             for it in rh[-4:]:
                 recent_session_history.append({"role": it.get("role", "user"), "content": it.get("content", "")})
@@ -951,8 +1144,27 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
             redis_ops = RedisOps()
             user_msg = {"role": "user", "content": payload.message, "timestamp": datetime.utcnow().isoformat() + "Z"}
             asst_msg = {"role": "assistant", "content": formatted_md or reply, "timestamp": datetime.utcnow().isoformat() + "Z"}
-            redis_ops.store_chat_message(payload.user_id, payload.session_id, user_msg)
-            redis_ops.store_chat_message(payload.user_id, payload.session_id, asst_msg)
+            import time as _t
+            _t0 = _t.perf_counter(); redis_ops.store_chat_message(payload.user_id, payload.session_id, user_msg)
+            try:
+                print(json.dumps({
+                    "metric": "redis_timing",
+                    "op": "store_chat_message_user",
+                    "ms": round((_t.perf_counter() - _t0) * 1000, 1),
+                    "session": payload.session_id
+                }))
+            except Exception:
+                pass
+            _t0 = _t.perf_counter(); redis_ops.store_chat_message(payload.user_id, payload.session_id, asst_msg)
+            try:
+                print(json.dumps({
+                    "metric": "redis_timing",
+                    "op": "store_chat_message_assistant",
+                    "ms": round((_t.perf_counter() - _t0) * 1000, 1),
+                    "session": payload.session_id
+                }))
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -1020,12 +1232,9 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                 headers={"Retry-After": "30"}
             )
 
+    # Fast path: skip retrieval upfront to reduce TTFB
     try:
-        context, all_hits, hits, file_context, _ = _build_context_bundle(
-            payload.user_id, payload.message, payload.session_id
-        )
-        
-        # Check fast prompt-only LRU first
+        # Prompt-only LRU
         fast_cached = _prompt_lru_get(payload.message.strip())
         if fast_cached:
             def event_gen_fast():
@@ -1037,41 +1246,56 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                 yield "\n"
                 yield "data: [DONE]\n\n"
             return StreamingResponse(event_gen_fast(), media_type="text/event-stream")
+    except Exception:
+        pass
 
-        # Check cache for similar queries
-        context_hash = _get_context_hash(all_hits, file_context)
-        cached_response = _get_cached_response(payload.message, context_hash)
-        
-        if cached_response:
-            # Return cached response immediately as evented SSE with raw markdown
-            def event_gen():
-                yield "event: start\n"
-                yield "data: ok\n\n"
-                yield "event: final\n"
-                for part in (cached_response or "").split("\n"):
-                    yield f"data: {part}\n"
-                yield "\n"
-                yield "data: [DONE]\n\n"
-            return StreamingResponse(event_gen(), media_type="text/event-stream")
-            
-        # Prepare messages for LLM (streaming: markdown-only to avoid front-end flicker)
+    # Minimal Stage-1 messages (no retrieval)
+    messages_stage1 = [
+        {"role": "system", "content": STREAM_SYSTEM_PROMPT},
+        {"role": "user", "content": payload.message}
+    ]
+    # Add tiny recent history for continuity
+    if payload.session_id:
+        try:
+            redis_ops = RedisOps()
+            recent_history = redis_ops.get_chat_history(payload.user_id, payload.session_id, limit=2)
+            if recent_history:
+                for msg in recent_history[-2:]:
+                    messages_stage1.insert(-1, {"role": msg["role"], "content": msg["content"]})
+        except Exception as e:
+            print(f"Error loading chat history: {e}")
+
+    # Fallback: original single-stage streaming path
+    try:
+        context, all_hits, hits, file_context, _ = _build_context_bundle(
+            payload.user_id, payload.message, payload.session_id
+        )
+        # Prepare messages for LLM (streaming: markdown-only)
         messages = [
             {"role": "system", "content": STREAM_SYSTEM_PROMPT},
             {"role": "user", "content": f"Context:\n{context}\n\nUser message: {payload.message}"}
         ]
-        
-        # Add recent chat history for context continuity (only for current session)
+        # Add recent chat history
         if payload.session_id:
             try:
                 redis_ops = RedisOps()
                 recent_history = redis_ops.get_chat_history(payload.user_id, payload.session_id, limit=2)
                 if recent_history:
-                    # Add last messages (limit=2)
                     for msg in recent_history[-2:]:
                         messages.insert(-1, {"role": msg["role"], "content": msg["content"]})
             except Exception as e:
                 print(f"Error loading chat history: {e}")
-
+        # Cache key for this context
+        context_hash = _get_context_hash(all_hits, file_context)
+        cached_response = _get_cached_response(payload.message, context_hash)
+        if cached_response:
+            def event_gen_cached():
+                yield "event: start\n"; yield "data: ok\n\n"
+                yield "event: final\n"
+                for part in (cached_response or "").split("\n"):
+                    yield f"data: {part}\n"
+                yield "\n"; yield "data: [DONE]\n\n"
+            return StreamingResponse(event_gen_cached(), media_type="text/event-stream")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error preparing chat: {e}")
 

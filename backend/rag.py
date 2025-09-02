@@ -52,6 +52,12 @@ def _load_index_and_docs(index_path=INDEX_PATH, docs_path=DOCS_PATH):
             f"{index_path} and {docs_path}"
         )
     index = faiss.read_index(index_path)
+    # Optimize HNSW search parameter for better recall/latency tradeoff
+    try:
+        if hasattr(index, 'hnsw'):
+            index.hnsw.efSearch = int(os.getenv('FAISS_HNSW_EFSEARCH', '96'))
+    except Exception:
+        pass
     with open(docs_path, "rb") as f:
         docs = pickle.load(f)
     return index, docs
