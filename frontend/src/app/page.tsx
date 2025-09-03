@@ -21,6 +21,26 @@ interface ChatMessage {
 }
 
 
+// Minimal session shape used to hydrate sidebar sessions
+interface ChatSession {
+  id: string;
+  title: string;
+  last_message: string;
+  created_at: string;
+  message_count: number;
+  is_active: boolean;
+}
+
+// Shape from backend; fields may be missing or loosely typed
+interface RawSession {
+  id: string | number;
+  title?: string;
+  last_message?: string;
+  created_at?: string;
+  message_count?: number | string;
+  is_active?: boolean | number | string;
+}
+
 
 // File icon component for different file types
 function FileIcon({ file }: { file: File }) {
@@ -249,7 +269,15 @@ export default function Home() {
     (async () => {
       try {
         const data = await apiSessionsList("soumya");
-        const sessions: ChatSession[] = data.sessions || [];
+        const rawSessions: RawSession[] = data.sessions || [];
+        const sessions: ChatSession[] = rawSessions.map((s) => ({
+          id: String(s.id),
+          title: (s.title ?? 'New Chat') as string,
+          last_message: (s.last_message ?? '') as string,
+          created_at: (s.created_at ?? new Date().toISOString()) as string,
+          message_count: typeof s.message_count === 'number' ? s.message_count : Number(s.message_count ?? 0),
+          is_active: Boolean(s.is_active),
+        }));
         setPrefetchedSessions(sessions);
         
         // Cache the sessions immediately
