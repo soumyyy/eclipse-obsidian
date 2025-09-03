@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { 
   Plus, 
   MessageSquare, 
@@ -43,9 +43,48 @@ export default function ChatSidebar({
 }: ChatSidebarProps) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [isCreating, setIsCreating] = useState(false);
-  const [debugMode, setDebugMode] = useState(false);
+  // Removed unused debugMode state
   const [isClient, setIsClient] = useState(false);
   const isMobile = isClient ? window.innerWidth < 640 : false;
+
+  // Define fetchSessions before effects to avoid TDZ errors in dependencies
+  const fetchSessions = useCallback(async (backgroundSync = false) => {
+    try {
+      const data = await apiSessionsList("soumya");
+      const freshSessions = data.sessions || [];
+      // Update state
+      setSessions(freshSessions);
+      // Cache the fresh data (only on client)
+      if (isClient) {
+        try {
+          localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify({
+            sessions: freshSessions,
+            timestamp: Date.now()
+          }));
+        } catch (cacheError) {
+          console.error("Error caching sessions:", cacheError);
+        }
+      }
+      if (!backgroundSync) {
+        console.log(`Loaded ${freshSessions.length} sessions from Redis:`, freshSessions.map((s: ChatSession) => ({ id: s.id, title: s.title, last_message: s.last_message })));
+      }
+    } catch (error) {
+      console.error("Error fetching sessions:", error);
+      if (backgroundSync && isClient) {
+        try {
+          const cached = localStorage.getItem(SESSIONS_CACHE_KEY);
+          if (cached) {
+            const { sessions: cachedSessions } = JSON.parse(cached);
+            if (Array.isArray(cachedSessions)) {
+              setSessions(cachedSessions);
+            }
+          }
+        } catch (cacheError) {
+          console.error("Error loading fallback cache:", cacheError);
+        }
+      }
+    }
+  }, [isClient]);
 
   // Set client flag on mount to prevent hydration mismatch
   useEffect(() => {
@@ -55,13 +94,11 @@ export default function ChatSidebar({
   useEffect(() => {
     if (isOpen) {
       fetchSessions();
-      
       // Auto-refresh sessions every 30 seconds for multi-device sync
       const interval = setInterval(fetchSessions, 30000);
-      
       return () => clearInterval(interval);
     }
-  }, [isOpen]);
+  }, [isOpen, fetchSessions]);
 
   // Refresh sessions when refreshTrigger changes
   useEffect(() => {
@@ -69,18 +106,16 @@ export default function ChatSidebar({
       console.log("Refreshing sessions due to trigger:", refreshTrigger);
       fetchSessions();
     }
-  }, [refreshTrigger]);
+  }, [refreshTrigger, fetchSessions]);
 
   // Background sync every 30 seconds when sidebar is open
   useEffect(() => {
     if (!isOpen) return;
-    
     const syncInterval = setInterval(() => {
       fetchSessions(true); // backgroundSync = true
     }, 30000); // 30 seconds
-    
     return () => clearInterval(syncInterval);
-  }, [isOpen]);
+  }, [isOpen, fetchSessions]);
 
   // Load cached sessions immediately for instant paint (only on client)
   useEffect(() => {
@@ -112,48 +147,7 @@ export default function ChatSidebar({
     }
   }, [isClient, initialSessions]);
 
-  const fetchSessions = async (backgroundSync = false) => {
-    try {
-      const data = await apiSessionsList("soumya");
-      const freshSessions = data.sessions || [];
-      
-      // Update state
-      setSessions(freshSessions);
-      
-      // Cache the fresh data (only on client)
-      if (isClient) {
-        try {
-          localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify({
-            sessions: freshSessions,
-            timestamp: Date.now()
-          }));
-        } catch (cacheError) {
-          console.error("Error caching sessions:", cacheError);
-        }
-      }
-      
-      // If this is a background sync, don't show loading states
-      if (!backgroundSync) {
-        console.log(`Loaded ${freshSessions.length} sessions from Redis:`, freshSessions.map((s: ChatSession) => ({ id: s.id, title: s.title, last_message: s.last_message })));
-      }
-    } catch (error) {
-      console.error("Error fetching sessions:", error);
-      // On error, try to use cached data as fallback (only on client)
-      if (backgroundSync && isClient) {
-        try {
-          const cached = localStorage.getItem(SESSIONS_CACHE_KEY);
-          if (cached) {
-            const { sessions: cachedSessions } = JSON.parse(cached);
-            if (Array.isArray(cachedSessions)) {
-              setSessions(cachedSessions);
-            }
-          }
-        } catch (cacheError) {
-          console.error("Error loading fallback cache:", cacheError);
-        }
-      }
-    }
-  };
+  
 
   const createNewSession = async () => {
     try {
@@ -433,14 +427,7 @@ export default function ChatSidebar({
                           const now = new Date();
                           const diffTime = now.getTime() - date.getTime();
                           const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-                          
-                          if (debugMode) {
-                            return (
-                              <span className="text-xs text-white/30 font-mono">
-                                {session.created_at}
-                              </span>
-                            );
-                          } else if (diffDays > 7) {
+                          if (diffDays > 7) {
                             return (
                               <span className="text-xs text-white/30">
                                 {date.toLocaleDateString()}

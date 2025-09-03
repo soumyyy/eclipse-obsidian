@@ -1,5 +1,5 @@
 "use client";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import Message from "@/components/Message";
 import Sound from "@/components/Sound";
 import { getBackendUrl } from "@/utils/config";
@@ -60,8 +60,8 @@ export default function Home() {
       if (typewriterRef.current.buffer.length > 0) {
         // Find the next markdown-friendly boundary
         let chunk = "";
-        let nextNewline = typewriterRef.current.buffer.indexOf('\n');
-        let nextSpace = typewriterRef.current.buffer.indexOf(' ');
+        const nextNewline = typewriterRef.current.buffer.indexOf('\n');
+        const nextSpace = typewriterRef.current.buffer.indexOf(' ');
         
         // Prioritize newlines to preserve markdown structure
         if (nextNewline !== -1) {
@@ -119,11 +119,15 @@ export default function Home() {
   const [transcribing, setTranscribing] = useState(false);
   const [transcribingDots, setTranscribingDots] = useState("");
   const transcribeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Assistant thinking indicator before first delta
+  const thinkingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const thinkingDotsRef = useRef<string>("");
+  const receivedFirstDeltaRef = useRef<boolean>(false);
 
   const [activeSession, setActiveSession] = useState<string>(sessionId);
   const [showTasks, setShowTasks] = useState(false);
   const [chatSidebarOpen, setChatSidebarOpen] = useState(false);
-  const [prefetchedSessions, setPrefetchedSessions] = useState<any[]>([]);
+  const [prefetchedSessions, setPrefetchedSessions] = useState<ChatSession[]>([]);
   const [isClient, setIsClient] = useState(false);
   const [creatingSession, setCreatingSession] = useState(false);
 
@@ -132,70 +136,7 @@ export default function Home() {
   const [refreshSidebar, setRefreshSidebar] = useState(0);
 
 
-  // Function to update session title based on first message
-  const updateSessionTitle = async (sessionId: string, firstMessage: string) => {
-    try {
-      // Generate a smart title from the first message
-      let title = firstMessage.trim();
-      
-      // Clean up the message for better titles
-      title = title.replace(/^[?!.,;:]+/, '').trim(); // Remove leading punctuation
-      title = title.replace(/\s+/g, ' '); // Normalize whitespace
-      
-      // Truncate if too long
-      if (title.length > 50) {
-        title = title.substring(0, 47) + "...";
-      }
-      
-      // If it's very short or empty, use a fallback
-      if (title.length < 3) {
-        title = `Chat about ${firstMessage.length > 0 ? firstMessage : 'something'}`;
-      }
-      
-      // Capitalize first letter
-      title = title.charAt(0).toUpperCase() + title.slice(1);
-      
-      const response = await fetch(`${getBackendUrl()}/api/sessions/${sessionId}/title`, {
-        method: "POST",
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
-        },
-        body: JSON.stringify({
-          user_id: "soumya",
-          title: title
-        })
-      });
-      
-      if (response.ok) {
-        console.log("Session title updated to:", title);
-        
-        // Update localStorage cache immediately (only on client)
-        if (isClient) {
-          try {
-            const cached = localStorage.getItem("eclipse_chat_sessions_cache");
-            if (cached) {
-              const { sessions: cachedSessions, timestamp } = JSON.parse(cached);
-              const updatedSessions = cachedSessions.map((session: any) => 
-                session.id === sessionId ? { ...session, title } : session
-              );
-              localStorage.setItem("eclipse_chat_sessions_cache", JSON.stringify({
-                sessions: updatedSessions,
-                timestamp: Date.now()
-              }));
-            }
-          } catch (cacheError) {
-            console.error("Error updating session cache:", cacheError);
-          }
-        }
-        
-        // Trigger a refresh of the sidebar
-        setRefreshSidebar(prev => prev + 1);
-      }
-    } catch (error) {
-      console.error("Error updating session title:", error);
-    }
-  };
+  // (Removed unused local updateSessionTitle helper — apiSessionUpdateTitle covers this.)
 
   // Auto-refresh sessions every 30 seconds for multi-device sync
   useEffect(() => {
@@ -209,7 +150,7 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [chatSidebarOpen]);
 
-  const createNewChatSession = async () => {
+  const createNewChatSession = useCallback(async () => {
     try {
       setCreatingSession(true);
       
@@ -252,7 +193,7 @@ export default function Home() {
     } finally {
       setCreatingSession(false);
     }
-  };
+  }, [isClient]);
 
   const handleSessionSelect = async (sessionId: string) => {
     // Clear current session context to prevent bleeding
@@ -308,7 +249,7 @@ export default function Home() {
     (async () => {
       try {
         const data = await apiSessionsList("soumya");
-        const sessions = data.sessions || [];
+        const sessions: ChatSession[] = data.sessions || [];
         setPrefetchedSessions(sessions);
         
         // Cache the sessions immediately
@@ -382,7 +323,7 @@ export default function Home() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [recording, showTasks]);
+  }, [recording, showTasks, createNewChatSession]);
 
   const sendMessage = async (userMessage: string) => {
     if (!userMessage.trim()) return;
@@ -463,17 +404,23 @@ export default function Home() {
       
       const assistantMessage: ChatMessage = {
         role: "assistant",
-        content: "",
+        content: "Thinking",
         sources: [],
         formatted: false
       };
       
       setMessages(prev => [...prev, assistantMessage]);
+      // Start thinking indicator (animated dots) until first delta or final arrives
+      try { if (thinkingIntervalRef.current) clearInterval(thinkingIntervalRef.current); } catch {}
+      thinkingDotsRef.current = "";
+      thinkingIntervalRef.current = setInterval(() => {
+        thinkingDotsRef.current = thinkingDotsRef.current.length >= 3 ? "" : thinkingDotsRef.current + ".";
+        setMessages(prev => prev.map((msg, idx) => idx === prev.length - 1 ? { ...msg, content: `Thinking${thinkingDotsRef.current}` } : msg));
+      }, 350);
       
       const decoder = new TextDecoder();
       let buffer = "";
       let accumulatedContent = ""; // used for fallback error and debugging
-      let inFinal = false;
       let finalBuffer = ""; // accumulate full final for safety
       // SSE event assembly: accumulate data lines per event until blank separator
       let currentEvent: string | null = null;
@@ -495,12 +442,16 @@ export default function Home() {
               if (currentEvent && eventDataLines.length > 0) {
                 const payload = eventDataLines.join('\n');
                 if (currentEvent === 'final') {
-                  inFinal = true;
                   finalBuffer = payload;
                   accumulatedContent = payload;
+                  // Stop thinking indicator and typewriter; replace with final markdown
+                  try { if (thinkingIntervalRef.current) clearInterval(thinkingIntervalRef.current); } catch {}
                   setMessages(prev => prev.map((msg, idx) => 
                     idx === prev.length - 1 ? { ...msg, content: payload, formatted: true } : msg
                   ));
+                  // Drain any pending typewriter buffer and stop it
+                  typewriterRef.current.buffer = "";
+                  stopTypewriter();
                 }
                 // Ignore start/ping/delta for now
               }
@@ -527,6 +478,17 @@ export default function Home() {
               }
               // Collect data lines for the current event
               eventDataLines.push(data);
+              // For delta events, stream chunks to typewriter immediately
+              if (currentEvent === 'delta' && data) {
+                // On first delta, stop thinking indicator and clear placeholder
+                if (!receivedFirstDeltaRef.current) {
+                  receivedFirstDeltaRef.current = true;
+                  try { if (thinkingIntervalRef.current) clearInterval(thinkingIntervalRef.current); } catch {}
+                  setMessages(prev => prev.map((msg, idx) => idx === prev.length - 1 ? { ...msg, content: "" } : msg));
+                }
+                typewriterRef.current.buffer += data;
+                ensureTypewriter();
+              }
               continue;
             }
           }
@@ -557,10 +519,19 @@ export default function Home() {
       } finally {
         setLoading(false);
         streamingRef.current = false;
+        try { if (thinkingIntervalRef.current) clearInterval(thinkingIntervalRef.current); } catch {}
         // If buffer is empty, stop now; otherwise let typewriter finish draining
         if (!typewriterRef.current.buffer.length) {
           stopTypewriter();
         }
+        // Ensure final message is marked formatted even if 'final' event was missed
+        setMessages(prev => prev.map((msg, idx) => {
+          if (idx !== prev.length - 1) return msg;
+          if (msg.role !== 'assistant') return msg;
+          if (msg.formatted) return msg;
+          const content = finalBuffer && finalBuffer.length ? finalBuffer : msg.content;
+          return { ...msg, content, formatted: true };
+        }));
       }
     } catch (error) {
       console.error("Error in chat stream:", error);

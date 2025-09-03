@@ -16,17 +16,7 @@ export interface MessageProps {
   attachments?: { name: string; type: string }[];
 }
 
-function normalizeLLMMarkdown(input: string): string {
-  if (!input) return "";
-  let text = input;
-  // Minimal: fix invisible characters and mid-word breaks; keep structure
-  text = text.replace(/[\u00A0\u202F\u2007]/g, " ");
-  text = text.replace(/[\u200B-\u200D\u2060\u00AD]/g, "");
-  // If a newline splits words, rejoin with a space (avoid concatenating words)
-  text = text.replace(/([A-Za-z0-9])[ \t]*\n[ \t]*([A-Za-z0-9])/g, "$1 $2");
-  text = text.replace(/\n{3,}/g, "\n\n");
-  return text.trim();
-}
+// (Removed unused normalize helper; backend now formats markdown robustly.)
 
 // File icon component for different file types
 function FileIcon({ file }: { file: { name: string; type: string } }) {
@@ -47,19 +37,12 @@ function FileIcon({ file }: { file: { name: string; type: string } }) {
 
 export default function Message({ role, content, formatted, attachments, sources }: MessageProps) {
   const isUser = role === "user";
-  const normalized = React.useMemo(() => {
-    if (isUser) {
-      return content; // User messages don't need markdown processing
-    }
-    // For assistant messages, always use raw content for markdown rendering
-    // The formatting system in the backend should handle proper markdown structure
-    return content;
-  }, [content, isUser, formatted]);
+  const normalized = content;
 
   const handleCopy = React.useCallback(async () => {
     try {
       await navigator.clipboard.writeText(normalized || "");
-    } catch (e) {
+    } catch {
       // noop
     }
   }, [normalized]);

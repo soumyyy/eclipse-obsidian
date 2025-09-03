@@ -2,11 +2,11 @@ import { getBackendUrl } from "@/utils/config";
 
 export async function POST(
   req: Request,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: { id: string } }
 ) {
   const backendUrl = getBackendUrl();
   const token = process.env.BACKEND_API_KEY;
-  const { id } = await params;
+  const { id } = params;
   const { searchParams } = new URL(req.url);
   
   try {
