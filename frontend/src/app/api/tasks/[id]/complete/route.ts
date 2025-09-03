@@ -1,8 +1,9 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { getBackendUrl } from "@/utils/config";
 
 export async function POST(
   req: Request,
-  { params }: { params: { id: string } }
+  { params }: any
 ) {
   const backendUrl = getBackendUrl();
   const token = process.env.BACKEND_API_KEY;
@@ -12,7 +13,7 @@ export async function POST(
   try {
     const response = await fetch(`${backendUrl}/tasks/${id}/complete?${searchParams.toString()}`, {
       method: "POST",
-      headers: { ...(token ? { "x-api-key": token } : {}) }
+      headers: { ...(token ? { "X-API-Key": token } : {}) }
     });
     const data = await response.json();
     return Response.json(data);

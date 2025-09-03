@@ -35,7 +35,7 @@ function FileIcon({ file }: { file: { name: string; type: string } }) {
   return <div className="w-4 h-4 sm:w-5 sm:h-5 bg-gray-500 rounded flex items-center justify-center text-white text-xs font-bold">FILE</div>;
 }
 
-export default function Message({ role, content, formatted, attachments, sources }: MessageProps) {
+export default function Message({ role, content, attachments, sources }: MessageProps) {
   const isUser = role === "user";
   const normalized = content;
 
