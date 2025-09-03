@@ -64,7 +64,7 @@ from clients.redis_config import RedisOps, RedisKeys
 from clients.llm_cerebras import cerebras_chat   # Cerebras chat wrapper
 from clients.llm_cerebras import cerebras_chat_stream  # Cerebras streaming chat
 from cot_utils import should_apply_cot, build_cot_hint, inject_cot_hint
-from formatting import JsonAnswer, Section, ensure_json_and_markdown, render_markdown, fallback_sanitize
+from formatting import JsonAnswer, Section, ensure_json_and_markdown, render_markdown, fallback_sanitize, format_markdown_unified
 from bs4 import BeautifulSoup
 import requests
 
@@ -479,7 +479,7 @@ def _ephemeral_recent(session_id: Optional[str], max_items: int = 3) -> List[Dic
 # ----------------- Semantic memory retrieval (on-the-fly) -----------------
 def _semantic_memory_retrieve(user_id: str, query: str, limit: int = 5):
     # Disabled for latency: avoid per-request memory embeddings
-    return []
+            return []
 
 # ----------------- Query expansion + RRF across variants -----------------
 def _expand_queries(q: str) -> List[str]:
@@ -896,135 +896,7 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
                 f"Server temporarily overloaded ({new_memory:.1f}MB). Please try again in a moment or use a simpler query."
             )
 
-    # Speculative two-stage streaming (feature-flagged)
-    if os.getenv("SPEC_STREAM_ENABLED", "true").lower() in ("1", "true", "yes"):
-        import asyncio, threading
-        def make_spec_sse():
-            async def sse_gen():
-                buffer: list[str] = []
-                queue: "asyncio.Queue[str]" = asyncio.Queue()
-                flags = {"s1_done": False, "s2_done": False}
-                state: dict[str, object] = {"all_hits": [], "hits": [], "context_hash": None}
-                loop = asyncio.get_running_loop()
-
-                def produce_stage1_sync():
-                    try:
-                        # Minimal messages for fast TTFB
-                        msgs = [
-                            {"role": "system", "content": STREAM_SYSTEM_PROMPT},
-                            {"role": "user", "content": payload.message},
-                        ]
-                        if payload.session_id:
-                            try:
-                                rops = RedisOps()
-                                rh = rops.get_chat_history(payload.user_id, payload.session_id, limit=2)
-                                if rh:
-                                    for m in rh[-2:]:
-                                        msgs.insert(-1, {"role": m.get("role", "user"), "content": m.get("content", "")})
-                            except Exception:
-                                pass
-                        mtoks = 256 if len(payload.message) < 120 else 512
-                        for chunk in cerebras_chat_stream(msgs, temperature=0.3, max_tokens=mtoks):
-                            if chunk:
-                                buffer.append(chunk)
-                                loop.call_soon_threadsafe(queue.put_nowait, chunk)
-                    finally:
-                        flags["s1_done"] = True
-
-                def produce_stage2_sync():
-                    try:
-                        # Build retrieval context (may take time)
-                        ctx, all_hits, hits, file_ctx, _ = _build_context_bundle(payload.user_id, payload.message, payload.session_id)
-                        state["all_hits"] = all_hits
-                        state["hits"] = hits
-                        # Gate: only continue if we actually found useful context
-                        if not ctx or not str(ctx).strip():
-                            return
-                        cont_msgs = [
-                            {"role": "system", "content": STREAM_SYSTEM_PROMPT},
-                            {"role": "assistant", "content": "".join(buffer)},
-                            {"role": "user", "content": f"Use this additional context if relevant and continue briefly.\n\nContext:\n{ctx}"},
-                        ]
-                        for chunk in cerebras_chat_stream(cont_msgs, temperature=0.3, max_tokens=256):
-                            if chunk:
-                                buffer.append(chunk)
-                                loop.call_soon_threadsafe(queue.put_nowait, chunk)
-                    except Exception:
-                        return
-                    finally:
-                        flags["s2_done"] = True
-
-                # Kick off producers in threads (to avoid blocking event loop)
-                t1 = threading.Thread(target=produce_stage1_sync, daemon=True)
-                t2 = threading.Thread(target=produce_stage2_sync, daemon=True)
-                t1.start(); t2.start()
-
-                # SSE preamble
-                yield "event: start\n"; yield "data: ok\n\n"
-                last_ping = time.time()
-                try:
-                    while True:
-                        try:
-                            item = await asyncio.wait_for(queue.get(), timeout=3.0)
-                            yield "event: delta\n"
-                            for part in str(item).split("\n"):
-                                yield f"data: {part}\n"
-                            yield "\n"
-                            queue.task_done()
-                        except asyncio.TimeoutError:
-                            pass
-                        # Heartbeat
-                        if time.time() - last_ping > 12:
-                            last_ping = time.time()
-                            yield "event: ping\n"; yield "data: ok\n\n"
-                        # Exit when both producers done and queue empty
-                        if flags["s1_done"] and flags["s2_done"] and queue.empty():
-                            break
-                finally:
-                    full = "".join(buffer)
-                    # Append to history and cache
-                    _append_history(payload.user_id, "user", payload.message, payload.session_id)
-                    try:
-                        _auto_capture_intents(payload.user_id, payload.message)
-                    except Exception:
-                        pass
-                    if payload.session_id:
-                        try:
-                            rops = RedisOps()
-                            rops.store_chat_message(payload.user_id, payload.session_id, {"role": "user", "content": payload.message, "timestamp": datetime.utcnow().isoformat() + "Z"})
-                            _append_history(payload.user_id, "assistant", full, payload.session_id)
-                            rops.store_chat_message(payload.user_id, payload.session_id, {"role": "assistant", "content": full, "timestamp": datetime.utcnow().isoformat() + "Z"})
-                            _prompt_lru_set(payload.message.strip(), full)
-                        except Exception:
-                            pass
-                    # Background memory extraction
-                    try:
-                        background_tasks.add_task(
-                            extract_and_store_memories,
-                            payload.user_id,
-                            payload.message,
-                            full,
-                            state.get("all_hits") or state.get("hits") or [],
-                        )
-                    except Exception:
-                        pass
-                    yield "event: final\n"
-                    for part in full.split("\n"):
-                        yield f"data: {part}\n"
-                    yield "\n"
-                    yield "data: [DONE]\n\n"
-            return sse_gen()
-
-        return StreamingResponse(
-            make_spec_sse(),
-            media_type="text/event-stream",
-            background=background_tasks,
-            headers={
-                "Cache-Control": "no-cache, no-transform",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
+    # Speculative streaming is disabled - using simple streaming instead
 
     # Retrieve context from FAISS + ephemeral + semantic memories
     try:
@@ -1124,18 +996,9 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
     # Increase caps for fuller answers
     max_tokens = 1024 if len(payload.message) < 120 else 2048
     reply = cerebras_chat(messages, temperature=0.3, max_tokens=max_tokens)
-    # Try to coerce to JSON-first answer and render deterministic markdown
-    # Fix word-boundary: single backslash in raw regex literal
+    # Normalize and format output consistently
     prefer_table = bool(re.search(r"\b(table|tabulate|comparison|vs)\b", payload.message, flags=re.I))
-    # Compact response if the user message looks like a short greeting/question
-    # Only compact for pure greetings; otherwise keep detail
-    prefer_compact = bool(re.fullmatch(r"\s*(hi|hello|hey|yo|hola)[.!?]?\s*", (payload.message or ""), flags=re.I))
-    from formatting import ensure_json_and_markdown as _shared_ensure
-    result = _shared_ensure(reply, prefer_table=prefer_table, prefer_compact=prefer_compact)
-    if isinstance(result, tuple) and len(result) == 2:
-        _, formatted_md = result
-    else:
-        formatted_md = reply
+    formatted_md = format_markdown_unified(reply, prefer_table=prefer_table, prefer_compact=False)
     _append_history(payload.user_id, "user", payload.message, payload.session_id)
     _append_history(payload.user_id, "assistant", formatted_md or reply, payload.session_id)
     # Persist to Redis when session_id present so follow-ups get proper context
@@ -1241,8 +1104,8 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                 yield "event: start\n"
                 yield "data: ok\n\n"
                 yield "event: final\n"
-                for part in (fast_cached or "").split("\n"):
-                    yield f"data: {part}\n"
+                for line in (fast_cached or '').split("\n"):
+                    yield f"data: {line}\n"
                 yield "\n"
                 yield "data: [DONE]\n\n"
             return StreamingResponse(event_gen_fast(), media_type="text/event-stream")
@@ -1292,8 +1155,9 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
             def event_gen_cached():
                 yield "event: start\n"; yield "data: ok\n\n"
                 yield "event: final\n"
-                for part in (cached_response or "").split("\n"):
-                    yield f"data: {part}\n"
+                # Proper SSE framing for multi-line payloads
+                for line in (cached_response or '').split("\n"):
+                    yield f"data: {line}\n"
                 yield "\n"; yield "data: [DONE]\n\n"
             return StreamingResponse(event_gen_cached(), media_type="text/event-stream")
     except Exception as e:
@@ -1311,10 +1175,9 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
             for chunk in cerebras_chat_stream(messages, temperature=0.3, max_tokens=stream_max_tokens):
                 if chunk:
                     buffer.append(chunk)
-                    # Emit raw markdown in evented SSE (no JSON)
+                    # Emit raw markdown in evented SSE (no JSON) - send as single chunk
                     yield "event: delta\n"
-                    for part in chunk.split("\n"):
-                        yield f"data: {part}\n"
+                    yield f"data: {chunk}\n"
                     yield "\n"
                 # Heartbeat every ~12s to keep proxies from closing the stream
                 if time.time() - last_ping > 12:
@@ -1337,8 +1200,9 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                 except Exception:
                     pass
                 
-                # Use accumulated buffer directly as final markdown (no extra reformat pass)
-                formatted_md = full
+                # Normalize and format output consistently
+                prefer_table = bool(re.search(r"\b(table|tabulate|comparison|vs)\b", payload.message, flags=re.I))
+                formatted_md = format_markdown_unified(full, prefer_table=prefer_table, prefer_compact=False)
                 
                 # Store messages in Redis if session_id is provided
                 if payload.session_id:
@@ -1391,10 +1255,10 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                 except Exception as e:
                     print(f"Task creation skipped: {e}")
                 
-                # Emit final markdown via evented SSE
+                # Emit final markdown via evented SSE with proper multi-line framing
                 yield "event: final\n"
-                for part in (formatted_md or full).split("\n"):
-                    yield f"data: {part}\n"
+                for line in (formatted_md or full).split("\n"):
+                    yield f"data: {line}\n"
                 yield "\n"
                 yield "data: [DONE]\n\n"
             except Exception as e:

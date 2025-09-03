@@ -27,18 +27,30 @@ interface ChatSidebarProps {
   onSessionSelect: (sessionId: string) => void;
   currentSessionId?: string;
   refreshTrigger?: number;
+  initialSessions?: ChatSession[];
 }
+
+const SESSIONS_CACHE_KEY = "eclipse_chat_sessions_cache";
+const SESSIONS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 export default function ChatSidebar({ 
   isOpen, 
   onClose, 
   onSessionSelect, 
   currentSessionId,
-  refreshTrigger
+  refreshTrigger,
+  initialSessions
 }: ChatSidebarProps) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [isCreating, setIsCreating] = useState(false);
   const [debugMode, setDebugMode] = useState(false);
+  const [isClient, setIsClient] = useState(false);
+  const isMobile = isClient ? window.innerWidth < 640 : false;
+
+  // Set client flag on mount to prevent hydration mismatch
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
 
   useEffect(() => {
     if (isOpen) {
@@ -54,16 +66,92 @@ export default function ChatSidebar({
   // Refresh sessions when refreshTrigger changes
   useEffect(() => {
     if (refreshTrigger && refreshTrigger > 0) {
+      console.log("Refreshing sessions due to trigger:", refreshTrigger);
       fetchSessions();
     }
   }, [refreshTrigger]);
 
-  const fetchSessions = async () => {
+  // Background sync every 30 seconds when sidebar is open
+  useEffect(() => {
+    if (!isOpen) return;
+    
+    const syncInterval = setInterval(() => {
+      fetchSessions(true); // backgroundSync = true
+    }, 30000); // 30 seconds
+    
+    return () => clearInterval(syncInterval);
+  }, [isOpen]);
+
+  // Load cached sessions immediately for instant paint (only on client)
+  useEffect(() => {
+    if (!isClient) return;
+    
+    const loadCachedSessions = () => {
+      try {
+        const cached = localStorage.getItem(SESSIONS_CACHE_KEY);
+        if (cached) {
+          const { sessions: cachedSessions, timestamp } = JSON.parse(cached);
+          const now = Date.now();
+          
+          // Use cache if it's fresh (less than 5 minutes old)
+          if (now - timestamp < SESSIONS_CACHE_TTL && Array.isArray(cachedSessions)) {
+            setSessions(cachedSessions);
+            return true; // Cache was used
+          }
+        }
+      } catch (error) {
+        console.error("Error loading cached sessions:", error);
+      }
+      return false; // Cache was not used
+    };
+
+    // Try cache first, then fallback to initialSessions
+    const cacheUsed = loadCachedSessions();
+    if (!cacheUsed && initialSessions && initialSessions.length > 0) {
+      setSessions(initialSessions);
+    }
+  }, [isClient, initialSessions]);
+
+  const fetchSessions = async (backgroundSync = false) => {
     try {
       const data = await apiSessionsList("soumya");
-      setSessions(data.sessions || []);
+      const freshSessions = data.sessions || [];
+      
+      // Update state
+      setSessions(freshSessions);
+      
+      // Cache the fresh data (only on client)
+      if (isClient) {
+        try {
+          localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify({
+            sessions: freshSessions,
+            timestamp: Date.now()
+          }));
+        } catch (cacheError) {
+          console.error("Error caching sessions:", cacheError);
+        }
+      }
+      
+      // If this is a background sync, don't show loading states
+      if (!backgroundSync) {
+        console.log(`Loaded ${freshSessions.length} sessions from Redis:`, freshSessions.map((s: ChatSession) => ({ id: s.id, title: s.title, last_message: s.last_message })));
+      }
     } catch (error) {
       console.error("Error fetching sessions:", error);
+      // On error, try to use cached data as fallback (only on client)
+      if (backgroundSync && isClient) {
+        try {
+          const cached = localStorage.getItem(SESSIONS_CACHE_KEY);
+          if (cached) {
+            const { sessions: cachedSessions } = JSON.parse(cached);
+            if (Array.isArray(cachedSessions)) {
+              setSessions(cachedSessions);
+            }
+          }
+        } catch (cacheError) {
+          console.error("Error loading fallback cache:", cacheError);
+        }
+      }
     }
   };
 
@@ -75,8 +163,25 @@ export default function ChatSidebar({
       const defaultTitle = `New Chat ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
       
       const data = await apiSessionCreate(defaultTitle, "soumya");
-      setSessions(prev => [data.session, ...prev]);
-      onSessionSelect(data.session.id);
+      const newSession = data.session;
+      
+      // Add to local state immediately for instant UI update
+      setSessions(prev => [newSession, ...prev]);
+      
+      // Update cache immediately (only on client)
+      if (isClient) {
+        try {
+          const updatedSessions = [newSession, ...sessions];
+          localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify({
+            sessions: updatedSessions,
+            timestamp: Date.now()
+          }));
+        } catch (cacheError) {
+          console.error("Error updating session cache:", cacheError);
+        }
+      }
+      
+      onSessionSelect(newSession.id);
       onClose();
     } catch (error) {
       console.error("Error creating session:", error);
@@ -90,7 +195,21 @@ export default function ChatSidebar({
     
     try {
       await apiSessionDelete(sessionId);
-      setSessions(prev => prev.filter(s => s.id !== sessionId));
+      const updatedSessions = sessions.filter(s => s.id !== sessionId);
+      setSessions(updatedSessions);
+      
+      // Update cache immediately (only on client)
+      if (isClient) {
+        try {
+          localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify({
+            sessions: updatedSessions,
+            timestamp: Date.now()
+          }));
+        } catch (cacheError) {
+          console.error("Error updating session cache:", cacheError);
+        }
+      }
+      
       if (currentSessionId === sessionId) {
         const newSession = await createDefaultSession();
         if (newSession) onSessionSelect(newSession.id);
@@ -103,8 +222,21 @@ export default function ChatSidebar({
   const createDefaultSession = async (): Promise<ChatSession | null> => {
     try {
       const data = await apiSessionCreate("New Chat", "soumya");
-      setSessions(prev => [data.session, ...prev]);
-      return data.session as ChatSession;
+      const newSession = data.session;
+      setSessions(prev => [newSession, ...prev]);
+      
+      // Update cache immediately
+      try {
+        const updatedSessions = [newSession, ...sessions];
+        localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify({
+          sessions: updatedSessions,
+          timestamp: Date.now()
+        }));
+      } catch (cacheError) {
+        console.error("Error updating session cache:", cacheError);
+      }
+      
+      return newSession as ChatSession;
     } catch (error) {
       console.error("Error creating default session:", error);
     }
@@ -192,15 +324,6 @@ export default function ChatSidebar({
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => setDebugMode(!debugMode)}
-              className="h-8 w-8 p-0 hover:bg-white/10 text-white/40 hover:text-white/60 rounded-xl transition-all duration-200 text-xs"
-              title="Toggle debug mode"
-            >
-              {debugMode ? "🔍" : "⚙️"}
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
               onClick={onClose}
               className="h-10 w-10 p-0 hover:bg-white/10 text-white/60 hover:text-white rounded-2xl transition-all duration-200"
             >
@@ -232,6 +355,33 @@ export default function ChatSidebar({
 
         {/* Sessions List with clean spacing */}
         <div className="flex-1 overflow-y-auto px-3 sm:px-3 pb-3">
+          {/* Mobile-only quick actions moved from header */}
+          {isMobile && (
+            <div className="px-1 py-2 flex items-center gap-2">
+              <Button
+                onClick={() => (window.location.href = '/memories')}
+                className="flex-1 bg-white/10 hover:bg-white/20 text-white border border-white/20 rounded-xl py-2"
+              >
+                Memories
+              </Button>
+              <Button
+                onClick={async () => {
+                  try {
+                    const r = await fetch(`/api/reindex`, { method: 'POST' });
+                    const d = await r.json();
+                    if (!r.ok || !d?.ok) throw new Error(d?.error || 'Reindex failed');
+                    alert('Reindex started / completed.');
+                  } catch (e: unknown) {
+                    const errorMessage = e instanceof Error ? e.message : 'Unknown error occurred';
+                    alert(`Reindex error: ${errorMessage}`);
+                  }
+                }}
+                className="flex-1 bg-white/10 hover:bg-white/20 text-white border border-white/20 rounded-xl py-2"
+              >
+                Reindex
+              </Button>
+            </div>
+          )}
           {sessions.length === 0 ? (
             <div className="p-6 sm:p-8 text-center text-white/50">
               <div className="p-4 bg-white/5 rounded-2xl mb-4 inline-block">
@@ -266,7 +416,9 @@ export default function ChatSidebar({
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between mb-1">
                       <h3 className="font-medium text-sm truncate">
-                        {session.title}
+                        {session.title && session.title.trim() !== '' 
+                          ? session.title 
+                          : truncateMessage(session.last_message || 'New Chat', 40)}
                       </h3>
                       <div className="flex flex-col items-end">
                         <span 

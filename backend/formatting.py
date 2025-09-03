@@ -62,19 +62,7 @@ def render_markdown(ans: JsonAnswer, prefer_table: bool = False, prefer_compact:
                 lines.append("| " + " | ".join(r) + " |")
             return "\n".join(lines).strip()
 
-    # Polish step: for trivial content, return plain text
-    if (prefer_compact or (not has_any_table and total_bullets <= 2)) and sections:
-        sec0 = sections[0]
-        bullets = [
-            _sanitize_inline(b)
-            for b in (sec0.bullets or [])
-            if _sanitize_inline(b) and not re.fullmatch(r"[•\-—|.]+", _sanitize_inline(b))
-        ]
-        if bullets:
-            # If two bullets, join with space for a single concise sentence
-            if len(bullets) == 2:
-                return (bullets[0] + " " + bullets[1]).strip()
-            return bullets[0]
+    # Removed compact mode that could collapse rich content to 1–2 bullets.
 
     for sec in sections:
         h = _sanitize_inline(sec.heading or "")
@@ -162,4 +150,31 @@ def ensure_json_and_markdown(raw: str, *, prefer_table: bool = False, prefer_com
         # Attempt a one-shot repair call should be done by caller due to circular import risk
         return None, fallback_sanitize(raw)
 
+
+def _close_unbalanced_code_fences(text: str) -> str:
+    try:
+        ticks = text.count("```")
+        if ticks % 2 == 1:
+            return text.rstrip() + "\n\n```\n"
+        return text
+    except Exception:
+        return text
+
+
+def format_markdown_unified(raw: str, *, prefer_table: bool = False, prefer_compact: bool = False) -> str:
+    """
+    Unified, robust formatter for assistant output.
+    - If JSON schema is detected, render to Markdown deterministically.
+    - Otherwise sanitize Markdown and close unbalanced code fences.
+    - Never collapse content to a single bullet; preserve structure.
+    """
+    try:
+        ans, md = ensure_json_and_markdown(raw, prefer_table=prefer_table, prefer_compact=False)
+        if md and md.strip():
+            return _close_unbalanced_code_fences(md)
+    except Exception:
+        pass
+    # Fallback path: sanitize raw markdown
+    cleaned = fallback_sanitize(raw)
+    return _close_unbalanced_code_fences(cleaned)
 

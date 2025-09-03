@@ -47,7 +47,14 @@ function FileIcon({ file }: { file: { name: string; type: string } }) {
 
 export default function Message({ role, content, formatted, attachments, sources }: MessageProps) {
   const isUser = role === "user";
-  const normalized = React.useMemo(() => (isUser || formatted ? content : normalizeLLMMarkdown(content)), [content, isUser, formatted]);
+  const normalized = React.useMemo(() => {
+    if (isUser) {
+      return content; // User messages don't need markdown processing
+    }
+    // For assistant messages, always use raw content for markdown rendering
+    // The formatting system in the backend should handle proper markdown structure
+    return content;
+  }, [content, isUser, formatted]);
 
   const handleCopy = React.useCallback(async () => {
     try {

@@ -89,4 +89,14 @@ export async function apiSessionDelete(sessionId: string) {
   return res.json();
 }
 
+export async function apiSessionUpdateTitle(sessionId: string, title: string, userId = "soumya") {
+  const res = await fetch(`${backendUrl}/api/sessions/${sessionId}/title`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ user_id: userId, title })
+  });
+  if (!res.ok) throw new Error("session title update failed");
+  return res.json();
+}
+
 

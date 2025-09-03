@@ -8,6 +8,7 @@ import { apiChatStream } from "@/lib/api";
 import HUD from "@/components/HUD";
 import TasksPanel from "@/components/TasksPanel";
 import ChatSidebar from "@/components/ChatSidebar";
+import { apiSessionUpdateTitle, apiSessionsList } from "@/lib/api";
 
 import { Plus, Mic, SendHorizonal } from "lucide-react";
 
@@ -54,38 +55,49 @@ export default function Home() {
 
   const ensureTypewriter = () => {
     if (typewriterRef.current.timer) return;
-    // Fast cadence typewriter effect
+    // Markdown-aware typewriter effect for better formatting
     typewriterRef.current.timer = setInterval(() => {
-      const revealCount = 4; // chars per tick
       if (typewriterRef.current.buffer.length > 0) {
-        const chunk = typewriterRef.current.buffer.slice(0, revealCount);
-        typewriterRef.current.buffer = typewriterRef.current.buffer.slice(revealCount);
+        // Find the next markdown-friendly boundary
+        let chunk = "";
+        let nextNewline = typewriterRef.current.buffer.indexOf('\n');
+        let nextSpace = typewriterRef.current.buffer.indexOf(' ');
+        
+        // Prioritize newlines to preserve markdown structure
+        if (nextNewline !== -1) {
+          chunk = typewriterRef.current.buffer.slice(0, nextNewline + 1);
+          typewriterRef.current.buffer = typewriterRef.current.buffer.slice(nextNewline + 1);
+        } else if (nextSpace !== -1) {
+          chunk = typewriterRef.current.buffer.slice(0, nextSpace + 1);
+          typewriterRef.current.buffer = typewriterRef.current.buffer.slice(nextSpace + 1);
+        } else {
+          // No more boundaries, take the rest
+          chunk = typewriterRef.current.buffer;
+          typewriterRef.current.buffer = "";
+        }
+        
         setMessages(prev => prev.map((msg, idx) => 
           idx === prev.length - 1 ? { ...msg, content: (msg.content || "") + chunk } : msg
         ));
       } else if (!streamingRef.current) {
-        // Stream finished and buffer drained
+        // Stream finished and buffer drained - now mark as formatted
+        setMessages(prev => prev.map((msg, idx) => 
+          idx === prev.length - 1 ? { ...msg, formatted: true } : msg
+        ));
         stopTypewriter();
       }
-    }, 25);
+    }, 15); // Much faster typewriter effect
   };
   
-  // Generate deterministic session ID based on time (same across all devices)
+  // Generate session ID in backend-compatible format
   const [sessionId] = useState<string>(() => {
     try {
       // Check if we have an existing session ID
       const existing = (typeof window !== 'undefined' && localStorage.getItem('eclipse_session_id')) || '';
       if (existing) return existing;
       
-      // Generate time-based session ID (same across all devices)
-      const now = new Date();
-      const dateStr = now.toISOString().split('T')[0]; // YYYY-MM-DD
-      const hour = now.getHours();
-      let timeSlot = 'morning';
-      if (hour >= 12 && hour < 17) timeSlot = 'afternoon';
-      else if (hour >= 17) timeSlot = 'evening';
-      
-      const deterministicId = `session_${dateStr}_${timeSlot}`;
+      // Generate backend-compatible session ID
+      const deterministicId = `session_${Math.floor(Date.now() / 1000)}`;
       
       if (typeof window !== 'undefined') {
         localStorage.setItem('eclipse_session_id', deterministicId);
@@ -93,9 +105,7 @@ export default function Home() {
       return deterministicId;
     } catch {
       // Fallback to time-based ID
-      const now = new Date();
-      const dateStr = now.toISOString().split('T')[0];
-      return `session_${dateStr}_fallback`;
+      return `session_${Math.floor(Date.now() / 1000)}`;
     }
   });
   
@@ -113,6 +123,8 @@ export default function Home() {
   const [activeSession, setActiveSession] = useState<string>(sessionId);
   const [showTasks, setShowTasks] = useState(false);
   const [chatSidebarOpen, setChatSidebarOpen] = useState(false);
+  const [prefetchedSessions, setPrefetchedSessions] = useState<any[]>([]);
+  const [isClient, setIsClient] = useState(false);
   const [creatingSession, setCreatingSession] = useState(false);
 
 
@@ -157,6 +169,26 @@ export default function Home() {
       
       if (response.ok) {
         console.log("Session title updated to:", title);
+        
+        // Update localStorage cache immediately (only on client)
+        if (isClient) {
+          try {
+            const cached = localStorage.getItem("eclipse_chat_sessions_cache");
+            if (cached) {
+              const { sessions: cachedSessions, timestamp } = JSON.parse(cached);
+              const updatedSessions = cachedSessions.map((session: any) => 
+                session.id === sessionId ? { ...session, title } : session
+              );
+              localStorage.setItem("eclipse_chat_sessions_cache", JSON.stringify({
+                sessions: updatedSessions,
+                timestamp: Date.now()
+              }));
+            }
+          } catch (cacheError) {
+            console.error("Error updating session cache:", cacheError);
+          }
+        }
+        
         // Trigger a refresh of the sidebar
         setRefreshSidebar(prev => prev + 1);
       }
@@ -185,15 +217,8 @@ export default function Home() {
       setMessages([]);
       setPendingFiles([]);
       
-      // Generate new time-based session ID
-      const now = new Date();
-      const dateStr = now.toISOString().split('T')[0];
-      const hour = now.getHours();
-      let timeSlot = 'morning';
-      if (hour >= 12 && hour < 17) timeSlot = 'afternoon';
-      else if (hour >= 17) timeSlot = 'evening';
-      
-      const newSessionId = `session_${dateStr}_${timeSlot}_${Date.now()}`;
+      // Generate session ID in backend-compatible format
+      const newSessionId = `session_${Math.floor(Date.now() / 1000)}`;
       
       // Generate a default title that will be updated after first message
       const defaultTitle = `New Chat ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
@@ -215,8 +240,8 @@ export default function Home() {
         await response.json();
         setActiveSession(newSessionId);
         
-        // Store new session ID in localStorage for persistence
-        if (typeof window !== 'undefined') {
+        // Store new session ID in localStorage for persistence (only on client)
+        if (isClient) {
           localStorage.setItem('eclipse_session_id', newSessionId);
         }
         
@@ -263,23 +288,50 @@ export default function Home() {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
-  // Load persisted conversation on mount
+  // Set client flag on mount to prevent hydration mismatch
   useEffect(() => {
+    setIsClient(true);
+  }, []);
+
+  // Load persisted conversation on mount & prefetch sessions (only on client)
+  useEffect(() => {
+    if (!isClient) return;
+    
     try {
-      const raw = typeof window !== "undefined" ? localStorage.getItem(STORAGE_KEY) : null;
+      const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as ChatMessage[];
         if (Array.isArray(parsed)) setMessages(parsed);
       }
     } catch {}
-  }, []);
+    
+    (async () => {
+      try {
+        const data = await apiSessionsList("soumya");
+        const sessions = data.sessions || [];
+        setPrefetchedSessions(sessions);
+        
+        // Cache the sessions immediately
+        try {
+          localStorage.setItem("eclipse_chat_sessions_cache", JSON.stringify({
+            sessions,
+            timestamp: Date.now()
+          }));
+        } catch (cacheError) {
+          console.error("Error caching sessions:", cacheError);
+        }
+      } catch {}
+    })();
+  }, [isClient]);
 
-  // Persist on every change
+  // Persist on every change (only on client)
   useEffect(() => {
+    if (!isClient) return;
+    
     try {
-      if (typeof window !== "undefined") localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
     } catch {}
-  }, [messages]);
+  }, [messages, isClient]);
 
   // Focus input on mount
   useEffect(() => { inputRef.current?.focus(); }, []);
@@ -348,7 +400,15 @@ export default function Home() {
     
     // Update session title if this is the first message
     if (messages.length === 0) {
-      updateSessionTitle(activeSession, userMessage);
+      console.log("Updating session title for session:", activeSession, "with message:", userMessage);
+      try { 
+        await apiSessionUpdateTitle(activeSession, userMessage, "soumya");
+        console.log("Session title updated successfully");
+        // Trigger sidebar refresh to show updated title
+        setRefreshSidebar(prev => prev + 1);
+      } catch (error) {
+        console.error("Error updating session title:", error);
+      }
     }
     
     // Upload files first if any
@@ -412,9 +472,13 @@ export default function Home() {
       
       const decoder = new TextDecoder();
       let buffer = "";
-      let accumulatedContent = ""; // still used for fallback error
+      let accumulatedContent = ""; // used for fallback error and debugging
       let inFinal = false;
       let finalBuffer = ""; // accumulate full final for safety
+      // SSE event assembly: accumulate data lines per event until blank separator
+      let currentEvent: string | null = null;
+      let eventDataLines: string[] = [];
+      let streamFinished = false;
       
       try {
         while (true) {
@@ -425,56 +489,49 @@ export default function Home() {
           const lines = buffer.split('\n');
           buffer = lines.pop() || '';
           
-          let currentEvent: string | null = null;
           for (const line of lines) {
+            // Blank line indicates end of the current SSE event
+            if (line.trim() === '') {
+              if (currentEvent && eventDataLines.length > 0) {
+                const payload = eventDataLines.join('\n');
+                if (currentEvent === 'final') {
+                  inFinal = true;
+                  finalBuffer = payload;
+                  accumulatedContent = payload;
+                  setMessages(prev => prev.map((msg, idx) => 
+                    idx === prev.length - 1 ? { ...msg, content: payload, formatted: true } : msg
+                  ));
+                }
+                // Ignore start/ping/delta for now
+              }
+              // Reset accumulator for next event
+              currentEvent = null;
+              eventDataLines = [];
+              continue;
+            }
+
             if (line.startsWith('event: ')) {
               currentEvent = line.slice(7).trim();
+              eventDataLines = [];
               continue;
             }
             if (line.startsWith('data: ')) {
               const data = line.slice(6);
               if (data === '[DONE]') {
-                // Mark message as formatted
+                // Stream complete
                 setMessages(prev => prev.map((msg, idx) => 
                   idx === prev.length - 1 ? { ...msg, formatted: true } : msg
                 ));
+                streamFinished = true;
                 break;
               }
-              // Evented SSE handling (raw markdown)
-              if (currentEvent === 'start') {
-                // Start optimistic typewriter while waiting for first token
-                if (!inFinal) {
-                  typewriterRef.current.buffer += '…';
-                  ensureTypewriter();
-                }
-                continue;
-              } else if (currentEvent === 'delta') {
-                if (!inFinal && data.length && data !== 'ok') {
-                  // Buffer for typewriter reveal
-                  typewriterRef.current.buffer += data + '\n';
-                  ensureTypewriter();
-                }
-              } else if (currentEvent === 'final') {
-                if (!inFinal) { inFinal = true; finalBuffer = ""; 
-                  // Mark formatted to bypass normalizer early
-                  setMessages(prev => prev.map((msg, idx) => 
-                    idx === prev.length - 1 ? { ...msg, formatted: true } : msg
-                  ));
-                }
-                if (data.length && data !== 'ok') {
-                  finalBuffer += data + '\n';
-                  // Continue typewriter reveal for final too
-                  typewriterRef.current.buffer += data + '\n';
-                  ensureTypewriter();
-                }
-              } else if (currentEvent === 'ping') {
-                continue;
-              } else {
-                // Unknown event; ignore
-                continue;
-              }
+              // Collect data lines for the current event
+              eventDataLines.push(data);
+              continue;
             }
           }
+
+          if (streamFinished) break;
         }
         
         reader.releaseLock();
@@ -648,39 +705,42 @@ export default function Home() {
               </div>
               
               <div className="flex items-center gap-2 sm:gap-4">
-                <button
-                  onClick={() => setShowTasks(!showTasks)}
-                  className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-2 sm:px-3 py-1 rounded-lg border border-white/20"
-                >
-                  <span>Tasks</span>
-                </button>
-                <button
-                  onClick={() => window.location.href = '/memories'}
-                  className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-2 sm:px-3 py-1 rounded-lg border border-white/20"
-                >
-                  <span>Memories</span>
-                </button>
-                <button
-                    onClick={async () => {
-                      try {
-                        const r = await fetch(`${getBackendUrl()}/admin/reindex`, { 
-                          method: "POST",
-                          headers: {
-                            'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
-                          }
-                        });
-                        const d = await r.json();
-                        if (!r.ok || !d?.ok) throw new Error(d?.error || "Reindex failed");
-                        alert("Reindex started / completed.");
-                      } catch (e: unknown) {
-                        const errorMessage = e instanceof Error ? e.message : 'Unknown error occurred';
-                        alert(`Reindex error: ${errorMessage}`);
-                      }
-                    }}
+                {/* Move Memories/Reindex to sidebar on mobile; keep in header on desktop */}
+                <div className="hidden sm:flex items-center gap-2">
+                  <button
+                    onClick={() => setShowTasks(!showTasks)}
                     className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-2 sm:px-3 py-1 rounded-lg border border-white/20"
                   >
-                    <span>Reindex</span>
+                    <span>Tasks</span>
                   </button>
+                  <button
+                    onClick={() => window.location.href = '/memories'}
+                    className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-2 sm:px-3 py-1 rounded-lg border border-white/20"
+                  >
+                    <span>Memories</span>
+                  </button>
+                  <button
+                      onClick={async () => {
+                        try {
+                          const r = await fetch(`${getBackendUrl()}/admin/reindex`, { 
+                            method: "POST",
+                            headers: {
+                              'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
+                            }
+                          });
+                          const d = await r.json();
+                          if (!r.ok || !d?.ok) throw new Error(d?.error || "Reindex failed");
+                          alert("Reindex started / completed.");
+                        } catch (e: unknown) {
+                          const errorMessage = e instanceof Error ? e.message : 'Unknown error occurred';
+                          alert(`Reindex error: ${errorMessage}`);
+                        }
+                      }}
+                      className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-2 sm:px-3 py-1 rounded-lg border border-white/20"
+                    >
+                      <span>Reindex</span>
+                    </button>
+                </div>
                   <div className="hidden sm:flex items-center gap-2">
                     <div className="flex items-center gap-2">
                       <div className={`w-2 h-2 rounded-full transition-colors duration-300 ${
@@ -850,6 +910,7 @@ export default function Home() {
          onSessionSelect={handleSessionSelect}
          currentSessionId={activeSession}
          refreshTrigger={refreshSidebar}
+         initialSessions={prefetchedSessions}
        />
 
     </div>
