@@ -1,17 +1,7 @@
 "use client";
 
 import React from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkBreaks from "remark-breaks";
-import remarkMath from "remark-math";
-import rehypeKatex from "rehype-katex";
-import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
-import rehypeSlug from "rehype-slug";
-import rehypeAutolinkHeadings from "rehype-autolink-headings";
-import rehypeHighlight from "rehype-highlight";
-import remarkExternalLinks from "remark-external-links";
-import remarkSmartypants from "remark-smartypants";
+import MarkdownRenderer from "@/components/MarkdownRenderer";
 
 export interface MessageProps {
   role: "user" | "assistant";
@@ -113,61 +103,7 @@ export default function Message({ role, content, attachments, sources }: Message
             )}
           </div>
         ) : (
-          <ReactMarkdown
-            className="prose prose-invert prose-sm max-w-none [&_table]:my-0 [&_table]:mt-0 [&_table]:mb-0 [&_th]:pl-3 sm:[&_th]:pl-6 [&_th]:pr-3 sm:[&_th]:pr-6 [&_td]:pl-3 sm:[&_td]:pl-6 [&_td]:pr-3 sm:[&_td]:pr-6 [&_tbody_tr:nth-child(odd)]:bg-white/5 [&_tbody_tr:hover]:bg-white/10 transition-colors [&_a.anchor]:ml-2 [&_a.anchor]:text-white/30 hover:[&_a.anchor]:text-white/60"
-            remarkPlugins={[
-              remarkGfm,
-              remarkBreaks,
-              remarkMath,
-              remarkSmartypants,
-              [remarkExternalLinks, { target: '_blank', rel: ['noopener', 'noreferrer'] }]
-            ]}
-            rehypePlugins={[
-              rehypeSlug,
-              [rehypeAutolinkHeadings, { behavior: 'append', properties: { className: ['anchor'] } }],
-              rehypeHighlight,
-              rehypeKatex,
-              [rehypeSanitize, {
-                ...defaultSchema,
-                attributes: {
-                  ...defaultSchema.attributes,
-                  code: [...(defaultSchema.attributes?.code || []), 'className'],
-                  pre: [...(defaultSchema.attributes?.pre || []), 'className'],
-                }
-              }]
-            ]}
-            components={{
-              // Custom components for better styling
-              h1: ({children}) => <h1 className="text-lg sm:text-xl font-bold text-white mb-3 sm:mb-4">{children}</h1>,
-              h2: ({children}) => <h2 className="text-base sm:text-lg font-bold text-white mb-2 sm:mb-3">{children}</h2>,
-              h3: ({children}) => <h3 className="text-sm sm:text-base font-bold text-white mb-2">{children}</h3>,
-              p: ({children}) => <p className="text-sm sm:text-base text-white/90 mb-2 sm:mb-3 leading-relaxed">{children}</p>,
-              ul: ({children}) => <ul className="text-sm sm:text-base text-white/90 mb-2 sm:mb-3 space-y-1 sm:space-y-2 list-disc list-inside">{children}</ul>,
-              ol: ({children}) => <ol className="text-sm sm:text-base text-white/90 mb-2 sm:mb-3 space-y-1 sm:space-y-2 list-decimal list-inside">{children}</ol>,
-              li: ({children}) => <li className="text-sm sm:text-base text-white/90">{children}</li>,
-              blockquote: ({children}) => <blockquote className="text-sm sm:text-base text-white/70 border-l-2 border-white/20 pl-3 sm:pl-4 py-1 sm:py-2 my-2 sm:my-3 bg-white/5 rounded-r-lg">{children}</blockquote>,
-              code: ({children, className}) => {
-                if (className && className.includes('language-')) {
-                  return (
-                    <code className={`text-xs sm:text-sm bg-white/10 text-white/90 px-2 sm:px-3 py-1 rounded-lg font-mono ${className}`}>
-                      {children}
-                    </code>
-                  );
-                }
-                return <code className="text-xs sm:text-sm bg-white/10 text-white/90 px-1.5 sm:px-2 py-0.5 rounded font-mono">{children}</code>;
-              },
-              pre: ({children}) => <pre className="text-xs sm:text-sm bg-white/10 text-white/90 p-2 sm:p-3 rounded-lg font-mono overflow-x-auto my-2 sm:my-3">{children}</pre>,
-              a: ({children, href}) => <a href={href} className="text-cyan-400 hover:text-cyan-300 underline decoration-cyan-400/30 hover:decoration-cyan-400/50 transition-colors">{children}</a>,
-              table: ({children}) => <div className="overflow-x-auto my-2 sm:my-3"><table className="min-w-full border-collapse border border-white/20 rounded-lg overflow-hidden">{children}</table></div>,
-              th: ({children}) => <th className="text-xs sm:text-sm font-bold text-white bg-white/10 px-2 sm:px-3 py-2 border border-white/20 text-left sticky top-0 z-10">{children}</th>,
-              td: ({children}) => <td className="text-xs sm:text-sm text-white/90 px-2 sm:px-3 py-2 border border-white/20">{children}</td>,
-              strong: ({children}) => <strong className="font-bold text-white">{children}</strong>,
-              em: ({children}) => <em className="italic text-white/80">{children}</em>,
-              hr: () => <hr className="border-white/20 my-3 sm:my-4" />,
-            }}
-          >
-            {normalized}
-          </ReactMarkdown>
+          <MarkdownRenderer content={normalized} />
         )}
 
         {/* Sources section */}

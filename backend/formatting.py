@@ -184,20 +184,18 @@ def _close_unbalanced_code_fences(text: str) -> str:
 
 
 def _normalize_code_fence_newlines(text: str) -> str:
-    """Ensure a newline after opening fences like ```python def ... -> ```python\n def ..."""
+    """Normalize code fences for robust Markdown rendering.
+    - Insert newline after language tag when code continues on same line
+    - Ensure opening fences start on their own line
+    - Ensure blank lines before opening and after closing fences
+    - Split closing fence followed by inline text
+    - Split headings followed immediately by a fence
+    """
     try:
         # Insert newline after language tag if content continues on same line
         text = re.sub(r"```([A-Za-z0-9_+\-]+)[ \t]+(?=\S)", r"```\1\n", text)
         # Ensure closing fence starts on its own line
         text = re.sub(r"(?<!\n)```\s*$", "\n```", text, flags=re.M)
-        return text
-    except Exception:
-        return text
-
-
-def _enforce_blank_lines_around_fences(text: str) -> str:
-    """Ensure blank lines before opening and after closing code fences for stable Markdown rendering."""
-    try:
         # Ensure opening fences start on their own line (convert inline ```lang to a new block)
         text = re.sub(r"(?<!\n)```([A-Za-z0-9_+\-]*)", r"\n\n```\1", text)
         # Blank line before opening fence if previous line is non-empty
@@ -223,13 +221,38 @@ def format_markdown_unified(raw: str, *, prefer_table: bool = False, prefer_comp
     try:
         ans, md = ensure_json_and_markdown(raw, prefer_table=prefer_table, prefer_compact=False)
         if md and md.strip():
-            md = _normalize_code_fence_newlines(md)
-            md = _enforce_blank_lines_around_fences(md)
+            # Inline normalization: fences and headings spacing
+            # 1) Insert newline after language tag in inline fences
+            md = re.sub(r"```([A-Za-z0-9_+\-]+)[ \t]+(?=\S)", r"```\1\n", md)
+            # 2) Ensure closing fence starts on its own line
+            md = re.sub(r"(?<!\n)```\s*$", "\n```", md, flags=re.M)
+            # 3) Force opening fences to their own line
+            md = re.sub(r"(?<!\n)```([A-Za-z0-9_+\-]*)", r"\n\n```\1", md)
+            # 4) Blank line before opening fence if previous line is non-empty
+            md = re.sub(r"(?m)([^\n\s][^\n]*)\n```", r"\1\n\n```", md)
+            # 5) Blank line after closing fence if next line is non-empty
+            md = re.sub(r"```\s*\n(?!\s*\n|\s*$)", "```\n\n", md)
+            # 6) Split closing fence followed by inline text
+            md = re.sub(r"```[ \t]*([^\n\s])", r"```\n\n\1", md)
+            # 7) Split headings followed immediately by fence
+            md = re.sub(r"(?m)^(#{1,6}[^\n`]*)\s+```([A-Za-z0-9_+\-]*)\s*$", r"\1\n\n```\2", md)
+            # 8) Ensure a blank line after headings if followed by paragraph text
+            md = re.sub(r"(?m)^(#{1,6}[^\n]*)\n(?!\s*\n|\s*```|\s*[-*+]\s|\s*\d+\.\s|\s*>\s|\s*\|)", r"\1\n\n", md)
+            # 9) Normalize horizontal rules: ensure lines with --- are isolated with blank lines
+            md = re.sub(r"\n\s*---+\s*\n", "\n\n---\n\n", md)
             return _close_unbalanced_code_fences(md)
     except Exception:
         pass
     # Fallback path: sanitize raw markdown
     cleaned = fallback_sanitize(raw)
-    cleaned = _normalize_code_fence_newlines(cleaned)
-    cleaned = _enforce_blank_lines_around_fences(cleaned)
+    # Inline normalization for fallback path as well
+    cleaned = re.sub(r"```([A-Za-z0-9_+\-]+)[ \t]+(?=\S)", r"```\1\n", cleaned)
+    cleaned = re.sub(r"(?<!\n)```\s*$", "\n```", cleaned, flags=re.M)
+    cleaned = re.sub(r"(?<!\n)```([A-Za-z0-9_+\-]*)", r"\n\n```\1", cleaned)
+    cleaned = re.sub(r"(?m)([^\n\s][^\n]*)\n```", r"\1\n\n```", cleaned)
+    cleaned = re.sub(r"```\s*\n(?!\s*\n|\s*$)", "```\n\n", cleaned)
+    cleaned = re.sub(r"```[ \t]*([^\n\s])", r"```\n\n\1", cleaned)
+    cleaned = re.sub(r"(?m)^(#{1,6}[^\n`]*)\s+```([A-Za-z0-9_+\-]*)\s*$", r"\1\n\n```\2", cleaned)
+    cleaned = re.sub(r"(?m)^(#{1,6}[^\n]*)\n(?!\s*\n|\s*```|\s*[-*+]\s|\s*\d+\.\s|\s*>\s|\s*\|)", r"\1\n\n", cleaned)
+    cleaned = re.sub(r"\n\s*---+\s*\n", "\n\n---\n\n", cleaned)
     return _close_unbalanced_code_fences(cleaned)

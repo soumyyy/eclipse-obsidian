@@ -65,6 +65,14 @@ from clients.llm_cerebras import cerebras_chat   # Cerebras chat wrapper
 from clients.llm_cerebras import cerebras_chat_stream  # Cerebras streaming chat
 from cot_utils import should_apply_cot, build_cot_hint, inject_cot_hint
 from formatting import JsonAnswer, Section, ensure_json_and_markdown, render_markdown, fallback_sanitize, format_markdown_unified
+
+# ----------------- SSE helpers (modularized) -----------------
+def _sse_event(event: str, payload: str):
+    """Yield a well-formed SSE event with multi-line payload support."""
+    yield "event: " + event + "\n"
+    for line in (payload or "").split("\n"):
+        yield f"data: {line}\n"
+    yield "\n"
 from bs4 import BeautifulSoup
 import requests
 
@@ -1101,32 +1109,14 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
         fast_cached = _prompt_lru_get(payload.message.strip())
         if fast_cached:
             def event_gen_fast():
-                yield "event: start\n"
-                yield "data: ok\n\n"
-                yield "event: final\n"
-                for line in (fast_cached or '').split("\n"):
-                    yield f"data: {line}\n"
-                yield "\n"
-                yield "data: [DONE]\n\n"
+                yield from _sse_event("start", "ok")
+                yield from _sse_event("final", fast_cached or "")
+                yield from _sse_event("message", "[DONE]")
             return StreamingResponse(event_gen_fast(), media_type="text/event-stream")
     except Exception:
         pass
 
-    # Minimal Stage-1 messages (no retrieval)
-    messages_stage1 = [
-        {"role": "system", "content": STREAM_SYSTEM_PROMPT},
-        {"role": "user", "content": payload.message}
-    ]
-    # Add tiny recent history for continuity
-    if payload.session_id:
-        try:
-            redis_ops = RedisOps()
-            recent_history = redis_ops.get_chat_history(payload.user_id, payload.session_id, limit=2)
-            if recent_history:
-                for msg in recent_history[-2:]:
-                    messages_stage1.insert(-1, {"role": msg["role"], "content": msg["content"]})
-        except Exception as e:
-            print(f"Error loading chat history: {e}")
+    # Stage-1 messages removed (unused). We build full messages once we have context below.
 
     # Fallback: original single-stage streaming path
     try:
@@ -1153,12 +1143,9 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
         cached_response = _get_cached_response(payload.message, context_hash)
         if cached_response:
             def event_gen_cached():
-                yield "event: start\n"; yield "data: ok\n\n"
-                yield "event: final\n"
-                # Proper SSE framing for multi-line payloads
-                for line in (cached_response or '').split("\n"):
-                    yield f"data: {line}\n"
-                yield "\n"; yield "data: [DONE]\n\n"
+                yield from _sse_event("start", "ok")
+                yield from _sse_event("final", cached_response or "")
+                yield from _sse_event("message", "[DONE]")
             return StreamingResponse(event_gen_cached(), media_type="text/event-stream")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error preparing chat: {e}")
@@ -1176,10 +1163,7 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                 if chunk:
                     buffer.append(chunk)
                     # Emit raw markdown in evented SSE (no JSON). Ensure multi-line chunks are split into proper SSE data lines.
-                    yield "event: delta\n"
-                    for line in str(chunk).split("\n"):
-                        yield f"data: {line}\n"
-                    yield "\n"
+                    yield from _sse_event("delta", str(chunk))
                 # Heartbeat every ~12s to keep proxies from closing the stream
                 if time.time() - last_ping > 12:
                     last_ping = time.time()
@@ -1257,11 +1241,8 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                     print(f"Task creation skipped: {e}")
                 
                 # Emit final markdown via evented SSE with proper multi-line framing
-                yield "event: final\n"
-                for line in (formatted_md or full).split("\n"):
-                    yield f"data: {line}\n"
-                yield "\n"
-                yield "data: [DONE]\n\n"
+                yield from _sse_event("final", formatted_md or full)
+                yield from _sse_event("message", "[DONE]")
             except Exception as e:
                 print(f"Error in final processing: {e}")
                 yield f"data: {{\"type\":\"error\",\"content\":\"Error processing response: {str(e)}\"}}\n\n"
