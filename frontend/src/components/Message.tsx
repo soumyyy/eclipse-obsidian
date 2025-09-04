@@ -7,6 +7,11 @@ import remarkBreaks from "remark-breaks";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
+import rehypeSlug from "rehype-slug";
+import rehypeAutolinkHeadings from "rehype-autolink-headings";
+import rehypeHighlight from "rehype-highlight";
+import remarkExternalLinks from "remark-external-links";
+import remarkSmartypants from "remark-smartypants";
 
 export interface MessageProps {
   role: "user" | "assistant";
@@ -37,7 +42,23 @@ function FileIcon({ file }: { file: { name: string; type: string } }) {
 
 export default function Message({ role, content, attachments, sources }: MessageProps) {
   const isUser = role === "user";
-  const normalized = content;
+  const normalized = React.useMemo(() => {
+    if (isUser) return content;
+    let txt = content || "";
+    // Live-stream normalizer to help ReactMarkdown spot code blocks while streaming
+    try {
+      // 1) If opening fence has language + code on same line, insert a newline after language
+      txt = txt.replace(/```([A-Za-z0-9_+\-]+)[ \t]+(?=\S)/g, "```$1\n");
+      // 2) Ensure opening fences start on their own line
+      txt = txt.replace(/(?<!\n)```([A-Za-z0-9_+\-]*)/g, "\n\n```$1");
+      // 3) If closing fence is followed by text on same line, split to next line
+      txt = txt.replace(/```[ \t]*([^\n\s])/g, "```\n\n$1");
+      // 4) If we have an odd number of fences, temporarily close to stabilize rendering
+      const tickCount = (txt.match(/```/g) || []).length;
+      if (tickCount % 2 === 1) txt = txt + "\n```\n";
+    } catch {}
+    return txt;
+  }, [content, isUser]);
 
   const handleCopy = React.useCallback(async () => {
     try {
@@ -93,9 +114,18 @@ export default function Message({ role, content, attachments, sources }: Message
           </div>
         ) : (
           <ReactMarkdown
-            className="prose prose-invert prose-sm max-w-none [&_table]:my-0 [&_table]:mt-0 [&_table]:mb-0 [&_th]:pl-3 sm:[&_th]:pl-6 [&_th]:pr-3 sm:[&_th]:pr-6 [&_td]:pl-3 sm:[&_td]:pl-6 [&_td]:pr-3 sm:[&_td]:pr-6"
-            remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
+            className="prose prose-invert prose-sm max-w-none [&_table]:my-0 [&_table]:mt-0 [&_table]:mb-0 [&_th]:pl-3 sm:[&_th]:pl-6 [&_th]:pr-3 sm:[&_th]:pr-6 [&_td]:pl-3 sm:[&_td]:pl-6 [&_td]:pr-3 sm:[&_td]:pr-6 [&_tbody_tr:nth-child(odd)]:bg-white/5 [&_tbody_tr:hover]:bg-white/10 transition-colors [&_a.anchor]:ml-2 [&_a.anchor]:text-white/30 hover:[&_a.anchor]:text-white/60"
+            remarkPlugins={[
+              remarkGfm,
+              remarkBreaks,
+              remarkMath,
+              remarkSmartypants,
+              [remarkExternalLinks, { target: '_blank', rel: ['noopener', 'noreferrer'] }]
+            ]}
             rehypePlugins={[
+              rehypeSlug,
+              [rehypeAutolinkHeadings, { behavior: 'append', properties: { className: ['anchor'] } }],
+              rehypeHighlight,
               rehypeKatex,
               [rehypeSanitize, {
                 ...defaultSchema,
@@ -129,7 +159,7 @@ export default function Message({ role, content, attachments, sources }: Message
               pre: ({children}) => <pre className="text-xs sm:text-sm bg-white/10 text-white/90 p-2 sm:p-3 rounded-lg font-mono overflow-x-auto my-2 sm:my-3">{children}</pre>,
               a: ({children, href}) => <a href={href} className="text-cyan-400 hover:text-cyan-300 underline decoration-cyan-400/30 hover:decoration-cyan-400/50 transition-colors">{children}</a>,
               table: ({children}) => <div className="overflow-x-auto my-2 sm:my-3"><table className="min-w-full border-collapse border border-white/20 rounded-lg overflow-hidden">{children}</table></div>,
-              th: ({children}) => <th className="text-xs sm:text-sm font-bold text-white bg-white/10 px-2 sm:px-3 py-2 border border-white/20 text-left">{children}</th>,
+              th: ({children}) => <th className="text-xs sm:text-sm font-bold text-white bg-white/10 px-2 sm:px-3 py-2 border border-white/20 text-left sticky top-0 z-10">{children}</th>,
               td: ({children}) => <td className="text-xs sm:text-sm text-white/90 px-2 sm:px-3 py-2 border border-white/20">{children}</td>,
               strong: ({children}) => <strong className="font-bold text-white">{children}</strong>,
               em: ({children}) => <em className="italic text-white/80">{children}</em>,

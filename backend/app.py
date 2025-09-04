@@ -1175,9 +1175,10 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
             for chunk in cerebras_chat_stream(messages, temperature=0.3, max_tokens=stream_max_tokens):
                 if chunk:
                     buffer.append(chunk)
-                    # Emit raw markdown in evented SSE (no JSON) - send as single chunk
+                    # Emit raw markdown in evented SSE (no JSON). Ensure multi-line chunks are split into proper SSE data lines.
                     yield "event: delta\n"
-                    yield f"data: {chunk}\n"
+                    for line in str(chunk).split("\n"):
+                        yield f"data: {line}\n"
                     yield "\n"
                 # Heartbeat every ~12s to keep proxies from closing the stream
                 if time.time() - last_ping > 12:

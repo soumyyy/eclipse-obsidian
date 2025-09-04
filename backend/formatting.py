@@ -130,12 +130,34 @@ def render_markdown(ans: JsonAnswer, prefer_table: bool = False, prefer_compact:
 def fallback_sanitize(raw: str) -> str:
     try:
         txt = str(raw or "")
+        # Protect fenced code blocks from line-join transforms
+        code_blocks: List[str] = []
+        def _stash(m):
+            code_blocks.append(m.group(0))
+            return f"__CODEBLOCK_{len(code_blocks)-1}__"
+        txt = re.sub(r"```[\s\S]*?```", _stash, txt)
+
+        # Whitespace and soft-characters cleanup on non-code regions
         txt = re.sub(r"[\u00A0\u202F\u2007]", " ", txt)
         txt = re.sub(r"[\u200B-\u200D\u2060\u00AD]", "", txt)
-        txt = re.sub(r"([A-Za-z0-9])\s*\n\s*([A-Za-z0-9])", r"\1\2", txt)
+        # Preserve markdown block boundaries (headings, lists, blockquotes, code fences, tables)
+        # Only join soft-wrap newlines where the next line is not a block starter
+        # and replace with a single space to avoid concatenating words.
+        txt = re.sub(
+            r"([^\n])\s*\n(?!\s*(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s|`{3}|\|))\s*",
+            r"\1 ",
+            txt,
+        )
         txt = re.sub(r"\n{3,}", "\n\n", txt)
         txt = re.sub(r"^\s*[A-Za-z]\s*$", "", txt, flags=re.M)
         txt = re.sub(r"[ \t]+\n", "\n", txt)
+
+        # Restore code blocks
+        def _unstash(m):
+            idx = int(m.group(1))
+            return code_blocks[idx] if 0 <= idx < len(code_blocks) else m.group(0)
+        txt = re.sub(r"__CODEBLOCK_(\d+)__", _unstash, txt)
+
         return txt.strip()
     except Exception:
         return str(raw or "")
@@ -161,6 +183,36 @@ def _close_unbalanced_code_fences(text: str) -> str:
         return text
 
 
+def _normalize_code_fence_newlines(text: str) -> str:
+    """Ensure a newline after opening fences like ```python def ... -> ```python\n def ..."""
+    try:
+        # Insert newline after language tag if content continues on same line
+        text = re.sub(r"```([A-Za-z0-9_+\-]+)[ \t]+(?=\S)", r"```\1\n", text)
+        # Ensure closing fence starts on its own line
+        text = re.sub(r"(?<!\n)```\s*$", "\n```", text, flags=re.M)
+        return text
+    except Exception:
+        return text
+
+
+def _enforce_blank_lines_around_fences(text: str) -> str:
+    """Ensure blank lines before opening and after closing code fences for stable Markdown rendering."""
+    try:
+        # Ensure opening fences start on their own line (convert inline ```lang to a new block)
+        text = re.sub(r"(?<!\n)```([A-Za-z0-9_+\-]*)", r"\n\n```\1", text)
+        # Blank line before opening fence if previous line is non-empty
+        text = re.sub(r"(?m)([^\n\s][^\n]*)\n```", r"\1\n\n```", text)
+        # Blank line after closing fence if next line is non-empty (not already blank or end)
+        text = re.sub(r"```\s*\n(?!\s*\n|\s*$)", "```\n\n", text)
+        # If closing fence is followed by text on the same line, split to next line
+        text = re.sub(r"```[ \t]*([^\n\s])", r"```\n\n\1", text)
+        # Headings followed by an opening fence on same line: split
+        text = re.sub(r"(?m)^(#{1,6}[^\n`]*)\s+```([A-Za-z0-9_+\-]*)\s*$", r"\1\n\n```\2", text)
+        return text
+    except Exception:
+        return text
+
+
 def format_markdown_unified(raw: str, *, prefer_table: bool = False, prefer_compact: bool = False) -> str:
     """
     Unified, robust formatter for assistant output.
@@ -171,10 +223,13 @@ def format_markdown_unified(raw: str, *, prefer_table: bool = False, prefer_comp
     try:
         ans, md = ensure_json_and_markdown(raw, prefer_table=prefer_table, prefer_compact=False)
         if md and md.strip():
+            md = _normalize_code_fence_newlines(md)
+            md = _enforce_blank_lines_around_fences(md)
             return _close_unbalanced_code_fences(md)
     except Exception:
         pass
     # Fallback path: sanitize raw markdown
     cleaned = fallback_sanitize(raw)
+    cleaned = _normalize_code_fence_newlines(cleaned)
+    cleaned = _enforce_blank_lines_around_fences(cleaned)
     return _close_unbalanced_code_fences(cleaned)
-

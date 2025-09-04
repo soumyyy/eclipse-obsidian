@@ -15,7 +15,7 @@
     "katex": "^0.16.22",
     "lucide-react": "^0.539.0",
     "mdast-util-to-string": "^4.0.0",
-    "next": "15.4.6",
+    "next": "^15.5.2",
     "prettier": "^3.3.3",
     "react": "19.1.0",
     "react-dom": "19.1.0",
@@ -32,6 +32,7 @@
     "remark-math": "^6.0.0",
     "remark-parse": "^11.0.0",
     "remark-slug": "^7.0.1",
+    "remark-smartypants": "^2.0.0",
     "remark-stringify": "^11.0.0",
     "unified": "^11.0.5"
   },
