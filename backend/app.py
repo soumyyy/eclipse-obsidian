@@ -64,7 +64,7 @@ from clients.redis_config import RedisOps, RedisKeys
 from clients.llm_cerebras import cerebras_chat   # Cerebras chat wrapper
 from clients.llm_cerebras import cerebras_chat_stream  # Cerebras streaming chat
 from cot_utils import should_apply_cot, build_cot_hint, inject_cot_hint
-from formatting import JsonAnswer, Section, ensure_json_and_markdown, render_markdown, fallback_sanitize, format_markdown_unified
+from formatting import format_markdown_unified
 
 # ----------------- SSE helpers (modularized) -----------------
 def _sse_event(event: str, payload: str):
@@ -833,6 +833,57 @@ def test_task_detection(message: str = Form(...)):
 @app.get("/healthz")
 def healthz():
     return {"ok": True, "assistant": ASSISTANT}
+
+@app.get("/health/full")
+def health_full():
+    """Full health report: backend + Redis + indices + SQLite availability."""
+    details = {"service": "obsidian-rag", "assistant": ASSISTANT}
+    # Redis
+    try:
+        rops = RedisOps()
+        rops.client.ping()
+        details["redis"] = {"ok": True, "mode": str(type(rops.client)).split("'")[-2]}
+    except Exception as e:
+        details["redis"] = {"ok": False, "error": str(e)}
+
+    # FAISS index presence
+    try:
+        idx_exists = os.path.exists(INDEX_FAISS)
+        docs_exists = os.path.exists(DOCS_PKL)
+        details["faiss"] = {"ok": bool(idx_exists and docs_exists), "index": idx_exists, "docs": docs_exists}
+    except Exception as e:
+        details["faiss"] = {"ok": False, "error": str(e)}
+
+    # SQLite files
+    try:
+        import sqlite3
+        data_dir = str(Path(BASE_DIR) / "data")
+        docs_sqlite = os.path.join(data_dir, "docs.sqlite")
+        mem_sqlite = os.path.join(data_dir, "memory.sqlite")
+        docs_ok = os.path.exists(docs_sqlite)
+        mem_ok = os.path.exists(mem_sqlite)
+        # Try a quick open/close if present
+        if docs_ok:
+            con = sqlite3.connect(docs_sqlite); con.close()
+        if mem_ok:
+            con = sqlite3.connect(mem_sqlite); con.close()
+        details["sqlite"] = {"ok": docs_ok or mem_ok, "docs": docs_ok, "memory": mem_ok}
+    except Exception as e:
+        details["sqlite"] = {"ok": False, "error": str(e)}
+
+    # Memory snapshot
+    try:
+        cur_mem, mem_status = get_cached_memory_status()
+        details["memory"] = {
+            "process_mb": round(cur_mem, 1),
+            "status": mem_status.get("status"),
+            "limits": {"warn": MEMORY_WARNING_MB, "limit": MEMORY_LIMIT_MB, "critical": MEMORY_CRITICAL_MB},
+        }
+    except Exception:
+        pass
+
+    details["ok"] = all(v.get("ok", False) for k, v in details.items() if isinstance(v, dict) and k in ("redis", "faiss", "sqlite"))
+    return details
 
 # ----------------- Admin reindex -----------------
 @app.post("/admin/reindex")

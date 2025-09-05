@@ -18,6 +18,49 @@ type Props = {
 };
 
 export default function MarkdownRenderer({ content, className }: Props) {
+  // Extract plain text from React children for copy behavior
+  const extractText = (node: unknown): string => {
+    if (node == null) return "";
+    if (typeof node === "string") return node;
+    if (Array.isArray(node)) return node.map(extractText).join("");
+    if (typeof node === "object" && node !== null && "props" in node) {
+      const nodeWithProps = node as { props: { children?: unknown } };
+      if (nodeWithProps.props && nodeWithProps.props.children) {
+        return extractText(nodeWithProps.props.children);
+      }
+    }
+    return "";
+  };
+
+  // Local component to render fenced code with Copy and pleasant UI
+  const CodeBlock: React.FC<{ lang: string; className: string; contentNode: React.ReactNode; rawText: string }> = ({ lang, className, contentNode, rawText }) => {
+    const [copied, setCopied] = React.useState(false);
+    const onCopy = async () => {
+      try { await navigator.clipboard.writeText(rawText); setCopied(true); setTimeout(() => setCopied(false), 1200); } catch {}
+    };
+    return (
+      <div className="relative my-3 sm:my-4 rounded-xl border border-white/15 bg-gradient-to-b from-white/5 to-white/10 shadow-lg overflow-hidden">
+        <div className="flex items-center justify-between px-3 py-1 border-b border-white/10 bg-black/2">
+          <span className="text-xs uppercase tracking-wide text-white/60 font-medium">{lang}</span>
+          <button
+            onClick={onCopy}
+            className="text-xs px-2 py-1 rounded-md bg-white/10 hover:bg-white/15 text-white/80 border border-white/10"
+            aria-label="Copy code"
+          >
+            {copied ? "Copied" : "Copy"}
+          </button>
+        </div>
+        <pre className="mt-0 mb-0 text-xs sm:text-sm text-white/90 px-3 sm:p-4 font-mono overflow-x-auto leading-relaxed bg-transparent">
+          <code className={`${className} bg-transparent`}>{contentNode}</code>
+        </pre>
+        {copied && (
+          <div className="absolute bottom-2 right-2 text-xs px-2 py-1 rounded-md bg-black/60 text-white/90 border border-white/10">
+            Copied
+          </div>
+        )}
+      </div>
+    );
+  };
   return (
     <ReactMarkdown
       className={
@@ -101,47 +144,19 @@ export default function MarkdownRenderer({ content, className }: Props) {
         // Fenced code blocks with language: custom boxed UI with header + copy
         pre: ({ children }) => {
           try {
-            const child = Array.isArray(children) ? children[0] : (children as any);
-            // Validate child is a <code> element
-            // @ts-ignore
+            const child = Array.isArray(children) ? children[0] : (children as { type?: string; props?: { className?: string; children?: unknown } });
             const isCode = child && child.type === 'code';
-            // @ts-ignore
             const className = isCode ? (child.props?.className || '') : '';
-            const lang = (className.match(/language-([a-zA-Z0-9_+-]+)/)?.[1] || '').toLowerCase();
-            // @ts-ignore
-            const raw = isCode ? (Array.isArray(child.props.children) ? child.props.children.join('') : String(child.props.children || '')) : '';
-
-            if (isCode && lang) {
-              const onCopy = async () => {
-                try { await navigator.clipboard.writeText(raw); } catch {}
-              };
-              return (
-                <div className="my-3 sm:my-4 rounded-xl border border-white/15 bg-gradient-to-b from-white/5 to-white/10 shadow-lg overflow-hidden">
-                  <div className="flex items-center justify-between px-3 py-2 border-b border-white/10 bg-white/5">
-                    <span className="text-xs uppercase tracking-wide text-white/60 font-medium">
-                      {lang}
-                    </span>
-                    <button
-                      onClick={onCopy}
-                      className="text-xs px-2 py-1 rounded-md bg-white/10 hover:bg-white/15 text-white/80 border border-white/10"
-                      aria-label="Copy code"
-                    >
-                      Copy
-                    </button>
-                  </div>
-                  <pre className="text-xs sm:text-sm text-white/90 p-3 sm:p-4 font-mono overflow-x-auto leading-relaxed bg-transparent">
-                    <code className={`${className} bg-transparent`}>{raw}</code>
-                  </pre>
-                </div>
-              );
-            }
-          } catch {}
-          // Fallback generic pre
-          return (
-            <pre className="text-xs sm:text-sm bg-white/10 text-white/90 p-2 sm:p-3 rounded-lg font-mono overflow-x-auto my-2 sm:my-3 border border-white/10">
-              {children}
-            </pre>
-          );
+            const lang = (className.match(/language-([a-zA-Z0-9_+-]+)/)?.[1] || 'code').toLowerCase();
+            const rawText = extractText(isCode ? child.props.children : children);
+            return <CodeBlock lang={lang || 'code'} className={className} contentNode={isCode ? child.props.children : children} rawText={rawText} />;
+          } catch {
+            return (
+              <pre className="text-xs sm:text-sm bg-white/10 text-white/90 p-2 sm:p-3 rounded-lg font-mono overflow-x-auto my-2 sm:my-3 border border-white/10">
+                {children}
+              </pre>
+            );
+          }
         },
         a: ({ children, href }) => (
           <a

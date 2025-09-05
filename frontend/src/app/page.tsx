@@ -11,6 +11,7 @@ import ChatSidebar from "@/components/ChatSidebar";
 import { apiSessionUpdateTitle, apiSessionsList } from "@/lib/api";
 
 import { Plus, Mic, SendHorizonal } from "lucide-react";
+import FileIcon from "@/components/FileIcon";
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -42,22 +43,6 @@ interface RawSession {
 }
 
 
-// File icon component for different file types
-function FileIcon({ file }: { file: File }) {
-  const ext = file.name.split('.').pop()?.toLowerCase();
-  const type = file.type;
-  
-  if (type.includes('pdf') || ext === 'pdf') {
-    return <div className="w-4 h-4 sm:w-5 sm:h-5 bg-red-500 rounded flex items-center justify-center text-white text-xs font-bold">PDF</div>;
-  }
-  if (type.includes('markdown') || ext === 'md' || ext === 'markdown') {
-    return <div className="w-4 h-4 sm:w-5 sm:h-5 bg-blue-500 rounded flex items-center justify-center text-white text-xs font-bold">MD</div>;
-  }
-  if (type.includes('text') || ext === 'txt') {
-    return <div className="w-4 h-4 sm:w-5 sm:h-5 bg-green-500 rounded flex items-center justify-center text-white text-xs font-bold">TXT</div>;
-  }
-  return <div className="w-4 h-4 sm:w-5 sm:h-5 bg-gray-500 rounded flex items-center justify-center text-white text-xs font-bold">FILE</div>;
-}
 
 export default function Home() {
   const STORAGE_KEY = "eclipse_chat_messages";
@@ -143,6 +128,9 @@ export default function Home() {
   const thinkingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const thinkingDotsRef = useRef<string>("");
   const receivedFirstDeltaRef = useRef<boolean>(false);
+  const [showThinking, setShowThinking] = useState(false);
+  const [slidingMessage, setSlidingMessage] = useState<ChatMessage | null>(null);
+  const [isSliding, setIsSliding] = useState(false);
 
   const [activeSession, setActiveSession] = useState<string>(sessionId);
   const [showTasks, setShowTasks] = useState(false);
@@ -245,9 +233,9 @@ export default function Home() {
     }
   };
 
-  useEffect(() => {
-    listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages]);
+   useEffect(() => {
+     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
+   }, [messages]);
 
   // Set client flag on mount to prevent hydration mismatch
   useEffect(() => {
@@ -355,8 +343,10 @@ export default function Home() {
 
   const sendMessage = async (userMessage: string) => {
     if (!userMessage.trim()) return;
+    // reset streaming state
+    receivedFirstDeltaRef.current = false;
     
-    // Add user message to chat
+    // Create user message object
     const userMessageObj: ChatMessage = {
       role: "user",
       content: userMessage,
@@ -364,8 +354,23 @@ export default function Home() {
       formatted: true
     };
     
-    setMessages(prev => [...prev, userMessageObj]);
+    // Set sliding message and start animation
+    console.log('Setting sliding message:', userMessageObj.content);
+    setSlidingMessage(userMessageObj);
     setInput("");
+    
+    // Start animation after a small delay to ensure state is set
+    setTimeout(() => {
+      console.log('Starting slide animation');
+      setIsSliding(true);
+    }, 50);
+    
+    // After animation completes, add to messages and clear sliding
+    setTimeout(() => {
+      setMessages(prev => [...prev, userMessageObj]);
+      setSlidingMessage(null);
+      setIsSliding(false);
+    }, 800); // Animation duration
     
     // Update session title if this is the first message
     if (messages.length === 0) {
@@ -412,9 +417,11 @@ export default function Home() {
       }
     }
     
-    // Start loading state
-    setLoading(true);
-    streamingRef.current = true;
+    // Small delay to let the sliding animation complete before starting streaming
+    setTimeout(() => {
+      setLoading(true);
+      streamingRef.current = true;
+    }, 200);
     stopTypewriter();
     typewriterRef.current.buffer = "";
     
@@ -432,19 +439,16 @@ export default function Home() {
       
       const assistantMessage: ChatMessage = {
         role: "assistant",
-        content: "Thinking",
+        content: "",
         sources: [],
         formatted: false
       };
       
       setMessages(prev => [...prev, assistantMessage]);
-      // Start thinking indicator (animated dots) until first delta or final arrives
+      // Show floating thinking indicator until first delta or final arrives
+      setShowThinking(true);
       try { if (thinkingIntervalRef.current) clearInterval(thinkingIntervalRef.current); } catch {}
       thinkingDotsRef.current = "";
-      thinkingIntervalRef.current = setInterval(() => {
-        thinkingDotsRef.current = thinkingDotsRef.current.length >= 3 ? "" : thinkingDotsRef.current + ".";
-        setMessages(prev => prev.map((msg, idx) => idx === prev.length - 1 ? { ...msg, content: `Thinking${thinkingDotsRef.current}` } : msg));
-      }, 350);
       
       const decoder = new TextDecoder();
       let buffer = "";
@@ -512,7 +516,7 @@ export default function Home() {
                 if (!receivedFirstDeltaRef.current) {
                   receivedFirstDeltaRef.current = true;
                   try { if (thinkingIntervalRef.current) clearInterval(thinkingIntervalRef.current); } catch {}
-                  setMessages(prev => prev.map((msg, idx) => idx === prev.length - 1 ? { ...msg, content: "" } : msg));
+                  setShowThinking(false);
                 }
                 typewriterRef.current.buffer += data;
                 ensureTypewriter();
@@ -548,6 +552,7 @@ export default function Home() {
         setLoading(false);
         streamingRef.current = false;
         try { if (thinkingIntervalRef.current) clearInterval(thinkingIntervalRef.current); } catch {}
+        setShowThinking(false);
         // If buffer is empty, stop now; otherwise let typewriter finish draining
         if (!typewriterRef.current.buffer.length) {
           stopTypewriter();
@@ -563,8 +568,9 @@ export default function Home() {
       }
     } catch (error) {
       console.error("Error in chat stream:", error);
-      setLoading(false);
-      streamingRef.current = false;
+              setLoading(false);
+        streamingRef.current = false;
+        setShowThinking(false);
       
       // Show error message
       const errorMessage: ChatMessage = {
@@ -576,6 +582,48 @@ export default function Home() {
       setMessages(prev => [...prev, errorMessage]);
     }
   };
+
+  // Floating "Thinking" indicator overlay (not in a chat bubble)
+  const ThinkingOverlay = () => (
+    <div className="pointer-events-none fixed inset-x-0 bottom-28 flex justify-center z-50">
+      <div className="flex items-center gap-2 text-white/70">
+        <span className="text-sm">Thinking</span>
+        <span className="inline-flex gap-1 items-end">
+          <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce [animation-delay:-0.2s]"></span>
+          <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce"></span>
+          <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce [animation-delay:0.2s]"></span>
+        </span>
+      </div>
+    </div>
+  );
+
+  // Sliding message component that appears below header
+  const SlidingMessage = () => {
+    if (!slidingMessage) return null;
+    
+    console.log('SlidingMessage render:', { slidingMessage: slidingMessage.content, isSliding });
+    
+    return (
+      <div 
+        className="fixed top-16 left-0 right-0 z-40 transition-all duration-700 ease-out"
+        style={{
+          transform: isSliding ? 'translateY(0)' : 'translateY(-200px)',
+          opacity: isSliding ? 1 : 0.5
+        }}
+      >
+        <div className="max-w-5xl mx-auto px-2 sm:px-3 lg:px-6">
+          <div className="flex justify-end">
+            <div className="bg-white/10 backdrop-blur-md rounded-2xl px-4 py-3 max-w-md shadow-lg border border-white/20">
+              <div className="text-white text-sm whitespace-pre-wrap break-words">
+                {slidingMessage.content}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
 
   async function startRecording() {
     try {
@@ -898,7 +946,9 @@ export default function Home() {
         </div>
         <Sound play={messages[messages.length - 1]?.role === "assistant"} />
       </div>
-      
+      {showThinking && <ThinkingOverlay />}
+      <SlidingMessage />
+
              {/* Existing Components */}
        <HUD />
        <TasksPanel isOpen={showTasks} onClose={() => setShowTasks(false)} />

@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import FileIcon from "@/components/FileIcon";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
 
 export interface MessageProps {
@@ -9,28 +10,14 @@ export interface MessageProps {
   sources?: { path: string; score: number }[];
   formatted?: boolean;
   attachments?: { name: string; type: string }[];
+  stickyTopRight?: boolean;
+  outerRef?: React.Ref<HTMLDivElement>;
 }
 
 // (Removed unused normalize helper; backend now formats markdown robustly.)
 
-// File icon component for different file types
-function FileIcon({ file }: { file: { name: string; type: string } }) {
-  const ext = file.name.split('.').pop()?.toLowerCase();
-  const type = file.type;
-  
-  if (type.includes('pdf') || ext === 'pdf') {
-    return <div className="w-4 h-4 sm:w-5 sm:h-5 bg-red-500 rounded flex items-center justify-center text-white text-xs font-bold">PDF</div>;
-  }
-  if (type.includes('markdown') || ext === 'md' || ext === 'markdown') {
-    return <div className="w-4 h-4 sm:w-5 sm:h-5 bg-blue-500 rounded flex items-center justify-center text-white text-xs font-bold">MD</div>;
-  }
-  if (type.includes('text') || ext === 'txt') {
-    return <div className="w-4 h-4 sm:w-5 sm:h-5 bg-green-500 rounded flex items-center justify-center text-white text-xs font-bold">TXT</div>;
-  }
-  return <div className="w-4 h-4 sm:w-5 sm:h-5 bg-gray-500 rounded flex items-center justify-center text-white text-xs font-bold">FILE</div>;
-}
 
-export default function Message({ role, content, attachments, sources }: MessageProps) {
+export default function Message({ role, content, attachments, sources, stickyTopRight, outerRef }: MessageProps) {
   const isUser = role === "user";
   const normalized = React.useMemo(() => {
     if (isUser) return content;
@@ -74,8 +61,13 @@ export default function Message({ role, content, attachments, sources }: Message
     );
   }
 
+  const rowClass = [
+    isUser ? "flex justify-end" : "flex justify-start",
+    stickyTopRight && isUser ? "sticky top-2 z-20" : "",
+  ].join(" ");
+
   return (
-    <div className={isUser ? "flex justify-end" : "flex justify-start"}>
+    <div className={rowClass} ref={outerRef}>
               <div
         className={[
           "relative max-w-[85%] sm:max-w-[85%] rounded-2xl border shadow-sm",
