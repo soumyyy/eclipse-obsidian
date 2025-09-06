@@ -178,11 +178,31 @@ export default function MarkdownRenderer({ content, className }: Props) {
             {children}
           </th>
         ),
-        td: ({ children }) => (
-          <td className="text-xs sm:text-sm text-white/90 px-2 sm:px-3 py-2 border border-white/20">
-            {children}
-          </td>
-        ),
+        td: ({ children }) => {
+          const text = extractText(children);
+          const lines = text.split(/\n+/).map(l => l.trim()).filter(Boolean);
+          const bulletLines = lines.filter(l => /^([\-*•])\s+/.test(l));
+          if (bulletLines.length >= 2) {
+            const items = lines
+              .map(l => l.replace(/^([\-*•])\s+/, '').trim())
+              .filter(Boolean);
+            return (
+              <td className="text-xs sm:text-sm text-white/90 px-2 sm:px-3 py-2 border border-white/20 align-top">
+                <ul className="list-disc list-inside space-y-1">
+                  {items.map((it, idx) => (
+                    <li key={idx}>{it}</li>
+                  ))}
+                </ul>
+              </td>
+            );
+          }
+          // Otherwise, preserve newlines
+          return (
+            <td className="text-xs sm:text-sm text-white/90 px-2 sm:px-3 py-2 border border-white/20">
+              <div className="whitespace-pre-wrap">{children}</div>
+            </td>
+          );
+        },
         strong: ({ children }) => <strong className="font-bold text-white">{children}</strong>,
         em: ({ children }) => <em className="italic text-white/80">{children}</em>,
         hr: () => <hr className="border-white/20 my-3 sm:my-4" />,

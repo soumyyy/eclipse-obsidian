@@ -1,5 +1,6 @@
 "use client";
 import { useState, useRef, useEffect, useCallback } from "react";
+import { flushSync } from "react-dom";
 import Message from "@/components/Message";
 import Sound from "@/components/Sound";
 import { getBackendUrl } from "@/utils/config";
@@ -124,13 +125,13 @@ export default function Home() {
   const [transcribing, setTranscribing] = useState(false);
   const [transcribingDots, setTranscribingDots] = useState("");
   const transcribeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const scrollAnimRef = useRef<number | null>(null);
   // Assistant thinking indicator before first delta
   const thinkingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const thinkingDotsRef = useRef<string>("");
   const receivedFirstDeltaRef = useRef<boolean>(false);
   const [showThinking, setShowThinking] = useState(false);
-  const [slidingMessage, setSlidingMessage] = useState<ChatMessage | null>(null);
-  const [isSliding, setIsSliding] = useState(false);
+  // Removed sliding overlay; we use smooth scroll instead
 
   const [activeSession, setActiveSession] = useState<string>(sessionId);
   const [showTasks, setShowTasks] = useState(false);
@@ -234,7 +235,13 @@ export default function Home() {
   };
 
    useEffect(() => {
-     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
+     const el = listRef.current;
+     if (!el) return;
+     // Only auto-scroll if user is already near the bottom
+     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+     if (nearBottom) {
+       el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+     }
    }, [messages]);
 
   // Set client flag on mount to prevent hydration mismatch
@@ -354,23 +361,13 @@ export default function Home() {
       formatted: true
     };
     
-    // Set sliding message and start animation
-    console.log('Setting sliding message:', userMessageObj.content);
-    setSlidingMessage(userMessageObj);
+    // Clear input and append user + assistant placeholder synchronously, then scroll
     setInput("");
-    
-    // Start animation after a small delay to ensure state is set
-    setTimeout(() => {
-      console.log('Starting slide animation');
-      setIsSliding(true);
-    }, 50);
-    
-    // After animation completes, add to messages and clear sliding
-    setTimeout(() => {
-      setMessages(prev => [...prev, userMessageObj]);
-      setSlidingMessage(null);
-      setIsSliding(false);
-    }, 800); // Animation duration
+    const assistantPlaceholder: ChatMessage = { role: "assistant", content: "", sources: [], formatted: false };
+    flushSync(() => {
+      setMessages(prev => [...prev, userMessageObj, assistantPlaceholder]);
+    });
+    smoothScrollToBottom(600);
     
     // Update session title if this is the first message
     if (messages.length === 0) {
@@ -437,14 +434,10 @@ export default function Home() {
         throw new Error("No response body");
       }
       
-      const assistantMessage: ChatMessage = {
-        role: "assistant",
-        content: "",
-        sources: [],
-        formatted: false
-      };
-      
-      setMessages(prev => [...prev, assistantMessage]);
+      // If user was near bottom, follow the placeholder
+      const el = listRef.current;
+      const wasNearBottom = !!el && (el.scrollHeight - el.scrollTop - el.clientHeight < 120);
+      if (wasNearBottom) requestAnimationFrame(() => smoothScrollToBottom(300));
       // Show floating thinking indicator until first delta or final arrives
       setShowThinking(true);
       try { if (thinkingIntervalRef.current) clearInterval(thinkingIntervalRef.current); } catch {}
@@ -517,6 +510,8 @@ export default function Home() {
                   receivedFirstDeltaRef.current = true;
                   try { if (thinkingIntervalRef.current) clearInterval(thinkingIntervalRef.current); } catch {}
                   setShowThinking(false);
+                  // Insert assistant message at first token
+                  setMessages(prev => [...prev, { role: 'assistant', content: '', sources: [], formatted: false }]);
                 }
                 typewriterRef.current.buffer += data;
                 ensureTypewriter();
@@ -534,19 +529,24 @@ export default function Home() {
         
         // Check if we have any accumulated content to show
         if (accumulatedContent.trim()) {
-          // Show what we got before the error
-          setMessages(prev => prev.map((msg, idx) => 
-            idx === prev.length - 1 ? { ...msg, content: accumulatedContent + "\n\n[Response was cut off due to an error]", formatted: true } : msg
-          ));
+          // If assistant started, replace last; else append new assistant error message
+          if (receivedFirstDeltaRef.current) {
+            setMessages(prev => prev.map((msg, idx) => 
+              idx === prev.length - 1 ? { ...msg, content: accumulatedContent + "\n\n[Response was cut off due to an error]", formatted: true } : msg
+            ));
+          } else {
+            setMessages(prev => [...prev, { role: 'assistant', content: accumulatedContent + "\n\n[Response was cut off due to an error]", formatted: true, sources: [] }]);
+          }
         } else {
-          // Show error message
-          const errorMessage: ChatMessage = {
-            role: "assistant",
-            content: "Sorry, I encountered an error. Please try again.",
-            sources: [],
-            formatted: true
-          };
-          setMessages(prev => [...prev, errorMessage]);
+          // Error text
+          const errText = 'Sorry, I encountered an error. Please try again.';
+          if (receivedFirstDeltaRef.current) {
+            setMessages(prev => prev.map((msg, idx) => 
+              idx === prev.length - 1 ? { ...msg, content: errText, formatted: true } : msg
+            ));
+          } else {
+            setMessages(prev => [...prev, { role: 'assistant', content: errText, formatted: true, sources: [] }]);
+          }
         }
       } finally {
         setLoading(false);
@@ -558,13 +558,17 @@ export default function Home() {
           stopTypewriter();
         }
         // Ensure final message is marked formatted even if 'final' event was missed
-        setMessages(prev => prev.map((msg, idx) => {
-          if (idx !== prev.length - 1) return msg;
-          if (msg.role !== 'assistant') return msg;
-          if (msg.formatted) return msg;
-          const content = finalBuffer && finalBuffer.length ? finalBuffer : msg.content;
-          return { ...msg, content, formatted: true };
-        }));
+        if (receivedFirstDeltaRef.current) {
+          setMessages(prev => prev.map((msg, idx) => {
+            if (idx !== prev.length - 1) return msg;
+            if (msg.role !== 'assistant') return msg;
+            if (msg.formatted) return msg;
+            const content = finalBuffer && finalBuffer.length ? finalBuffer : msg.content;
+            return { ...msg, content, formatted: true };
+          }));
+        } else if (finalBuffer && finalBuffer.trim().length) {
+          setMessages(prev => [...prev, { role: 'assistant', content: finalBuffer, formatted: true, sources: [] }]);
+        }
       }
     } catch (error) {
       console.error("Error in chat stream:", error);
@@ -572,14 +576,14 @@ export default function Home() {
         streamingRef.current = false;
         setShowThinking(false);
       
-      // Show error message
-      const errorMessage: ChatMessage = {
-        role: "assistant",
-        content: "Sorry, I encountered an error. Please try again.",
-        sources: [],
-        formatted: true
-      };
-      setMessages(prev => [...prev, errorMessage]);
+      const errText = 'Sorry, I encountered an error. Please try again.';
+      if (receivedFirstDeltaRef.current) {
+        setMessages(prev => prev.map((msg, idx) => 
+          idx === prev.length - 1 ? { ...msg, content: errText, formatted: true } : msg
+        ));
+      } else {
+        setMessages(prev => [...prev, { role: 'assistant', content: errText, formatted: true, sources: [] }]);
+      }
     }
   };
 
@@ -597,32 +601,27 @@ export default function Home() {
     </div>
   );
 
-  // Sliding message component that appears below header
-  const SlidingMessage = () => {
-    if (!slidingMessage) return null;
-    
-    console.log('SlidingMessage render:', { slidingMessage: slidingMessage.content, isSliding });
-    
-    return (
-      <div 
-        className="fixed top-16 left-0 right-0 z-40 transition-all duration-700 ease-out"
-        style={{
-          transform: isSliding ? 'translateY(0)' : 'translateY(-200px)',
-          opacity: isSliding ? 1 : 0.5
-        }}
-      >
-        <div className="max-w-5xl mx-auto px-2 sm:px-3 lg:px-6">
-          <div className="flex justify-end">
-            <div className="bg-white/10 backdrop-blur-md rounded-2xl px-4 py-3 max-w-md shadow-lg border border-white/20">
-              <div className="text-white text-sm whitespace-pre-wrap break-words">
-                {slidingMessage.content}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  };
+  // Smooth scroll helper for message list
+  function smoothScrollToBottom(duration = 500) {
+    const el = listRef.current as HTMLDivElement | null;
+    if (!el) return;
+    if (scrollAnimRef.current) cancelAnimationFrame(scrollAnimRef.current);
+    const start = el.scrollTop;
+    const end = el.scrollHeight - el.clientHeight;
+    const change = end - start;
+    const startTime = performance.now();
+    const ease = (t: number) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+    const step = (now: number) => {
+      const elapsed = Math.min((now - startTime) / duration, 1);
+      el.scrollTop = start + change * ease(elapsed);
+      if (elapsed < 1) {
+        scrollAnimRef.current = requestAnimationFrame(step);
+      } else {
+        scrollAnimRef.current = null;
+      }
+    };
+    scrollAnimRef.current = requestAnimationFrame(step);
+  }
 
 
   async function startRecording() {
@@ -947,7 +946,6 @@ export default function Home() {
         <Sound play={messages[messages.length - 1]?.role === "assistant"} />
       </div>
       {showThinking && <ThinkingOverlay />}
-      <SlidingMessage />
 
              {/* Existing Components */}
        <HUD />
