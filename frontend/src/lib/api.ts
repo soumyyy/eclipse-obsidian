@@ -99,4 +99,14 @@ export async function apiSessionUpdateTitle(sessionId: string, title: string, us
   return res.json();
 }
 
+export async function apiTasksExtract(message: string) {
+  const res = await fetch(`/api/tasks/extract`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message })
+  });
+  if (!res.ok) throw new Error("task extract failed");
+  return res.json();
+}
+
 

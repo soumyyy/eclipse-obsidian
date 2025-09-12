@@ -2,7 +2,7 @@ import { getBackendUrl } from "@/utils/config";
 
 export async function GET(req: Request) {
   const backendUrl = getBackendUrl();
-  const token = process.env.BACKEND_API_KEY;
+  const token = process.env.NEXT_PUBLIC_BACKEND_TOKEN || process.env.BACKEND_API_KEY || process.env.BACKEND_TOKEN;
   const { searchParams } = new URL(req.url);
   
   try {

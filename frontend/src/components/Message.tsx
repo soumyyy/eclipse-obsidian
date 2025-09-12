@@ -12,12 +12,15 @@ export interface MessageProps {
   attachments?: { name: string; type: string }[];
   stickyTopRight?: boolean;
   outerRef?: React.Ref<HTMLDivElement>;
+  taskCandidates?: { title: string; due_ts?: number; confidence?: number }[];
+  onTaskAdd?: (title: string) => void;
+  onTaskDismiss?: (candidateIndex: number) => void;
 }
 
 // (Removed unused normalize helper; backend now formats markdown robustly.)
 
 
-export default function Message({ role, content, attachments, sources, stickyTopRight, outerRef }: MessageProps) {
+export default function Message({ role, content, attachments, sources, stickyTopRight, outerRef, taskCandidates, onTaskAdd, onTaskDismiss }: MessageProps) {
   const isUser = role === "user";
   // Do not render any assistant bubble when it's just a placeholder (empty content)
   if (!isUser && (!content || content.trim().length === 0)) {
@@ -112,6 +115,36 @@ export default function Message({ role, content, attachments, sources, stickyTop
                 <div key={index} className="flex items-center justify-between text-xs bg-white/5 rounded-lg px-2 sm:px-3 py-1.5 sm:py-2">
                   <span className="text-white/70 font-mono truncate">{source.path}</span>
                   <span className="text-white/50 ml-2 sm:ml-3">{(source.score * 100).toFixed(1)}%</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Task candidates section */}
+        {taskCandidates && taskCandidates.length > 0 && onTaskAdd && onTaskDismiss && (
+          <div className="mt-3 sm:mt-4 pt-2 sm:pt-3 border-t border-white/10">
+            <div className="text-xs text-white/50 mb-2">Detected Tasks:</div>
+            <div className="space-y-2">
+              {taskCandidates.map((task, index) => (
+                <div key={index} className="flex items-center justify-between text-xs bg-white/5 rounded-lg px-2 sm:px-3 py-2">
+                  <span className="text-white/70 flex-1 pr-2">{task.title}</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => onTaskAdd(task.title)}
+                      className="text-green-400 hover:text-green-300 text-xs px-2 py-1 rounded bg-green-400/10 hover:bg-green-400/20 transition-colors"
+                      title="Add as task"
+                    >
+                      Add
+                    </button>
+                    <button
+                      onClick={() => onTaskDismiss(index)}
+                      className="text-red-400 hover:text-red-300 text-xs px-2 py-1 rounded bg-red-400/10 hover:bg-red-400/20 transition-colors"
+                      title="Dismiss"
+                    >
+                      ×
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>

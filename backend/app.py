@@ -1508,6 +1508,22 @@ def finish_task(task_id: int, user_id: str):
     ok = complete_task(user_id, task_id)
     return {"ok": ok}
 
+@app.post("/tasks/extract", dependencies=[Depends(require_api_key)])
+def extract_tasks(message: str, user_id: str = "soumya"):
+    """Extract potential tasks from a message using AI"""
+    try:
+        from services.task_management import smart_detect_task
+        task = smart_detect_task(message)
+        candidates = []
+        if task:
+            candidates.append({
+                "title": task,
+                "confidence": 0.8
+            })
+        return {"ok": True, "candidates": candidates}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "candidates": []}
+
 # ----------------- Review queue endpoints -----------------
 
 @app.get("/memories/pending", dependencies=[Depends(require_api_key)])
