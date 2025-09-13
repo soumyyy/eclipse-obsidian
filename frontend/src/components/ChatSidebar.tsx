@@ -1,10 +1,10 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { 
-  Plus, 
-  MessageSquare, 
-  Trash2, 
+import {
+  MessageSquare,
+  SquarePlus,
+  Trash2,
   X,
   ChevronRight,
   Sparkles
@@ -340,7 +340,7 @@ export default function ChatSidebar({
               </div>
             ) : (
               <>
-                <Plus className="h-5 w-5 mr-3" />
+                <SquarePlus className="h-5 w-5 mr-3" />
                 New Chat
               </>
             )}

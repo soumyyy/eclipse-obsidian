@@ -11,7 +11,7 @@ import HUD from "@/components/HUD";
 import TasksPanel from "@/components/TasksPanel";
 import ChatSidebar from "@/components/ChatSidebar";
 
-import { Plus, Mic, SendHorizonal } from "lucide-react";
+import { ArrowRight, Paperclip, Mic, MessageSquarePlus } from "lucide-react";
 import FileIcon from "@/components/FileIcon";
 import { ChatMessage, ChatSession, RawSession } from "@/types/chat";
 
@@ -85,7 +85,6 @@ export default function Home() {
   // State
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
-  const [transcribingDots, setTranscribingDots] = useState("");
 
   const [activeSession, setActiveSession] = useState<string>(sessionId);
   const [showTasks, setShowTasks] = useState(false);
@@ -285,9 +284,7 @@ export default function Home() {
             clearInterval(transcribeIntervalRef.current);
           }
         } catch {}
-        transcribeIntervalRef.current = setInterval(() => {
-          setTranscribingDots((d) => (d.length >= 3 ? "" : d + "."));
-        }, 350);
+        // Transcribing dots animation removed to reduce clutter
         try {
           const blob = new Blob(recordedChunksRef.current, { type: mr.mimeType || 'audio/webm' });
           const form = new FormData();
@@ -310,7 +307,6 @@ export default function Home() {
               clearInterval(transcribeIntervalRef.current);
             }
           } catch {}
-          setTranscribingDots("");
         }
       };
       mr.start();
@@ -319,7 +315,7 @@ export default function Home() {
       console.error(err);
       setRecording(false);
     }
-  }, [setInput, setTranscribing, setTranscribingDots, setRecording]);
+  }, [setInput, setTranscribing, setRecording]);
 
   const stopRecording = useCallback(() => {
     try {
@@ -486,9 +482,16 @@ export default function Home() {
                 {/* Tasks button always visible, Memories/Reindex only on desktop */}
                 <button
                   onClick={() => setShowTasks(!showTasks)}
-                  className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-2 sm:px-3 py-1 rounded-lg border border-white/20"
+                  className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-2 sm:px-3 py-0.5 rounded-lg border border-white/20 ml-6"
                 >
                   <span>Tasks</span>
+                </button>
+                {/* Chart button on mobile */}
+                <button
+                  onClick={() => {/* Add chart functionality here */}}
+                  className="sm:hidden flex items-center justify-center text-white/60 hover:text-white transition-colors hover:bg-white/10 px-2 py-0.5 h-6"
+                >
+                  <MessageSquarePlus size={24} />
                 </button>
                 {/* Desktop only: Memories and Reindex */}
                 <div className="hidden sm:flex items-center gap-2">
@@ -594,7 +597,7 @@ export default function Home() {
         </main>
 
         {/* Floating input bar */}
-        <div className="fixed bottom-2 sm:bottom-4 inset-x-0 px-2 sm:px-3 pointer-events-none">
+        <div className="fixed bottom-4 sm:bottom-6 inset-x-0 px-2 sm:px-3 pointer-events-none">
           <div className="max-w-5xl mx-auto pointer-events-auto">
             {/* File uploads display - above the input bar */}
             {pendingFiles.length > 0 && (
@@ -616,7 +619,7 @@ export default function Home() {
               </div>
             )}
             
-            {/* Main input bar */}
+            {/* Main input bar - Responsive layout */}
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -624,47 +627,186 @@ export default function Home() {
                   sendMessageRef.current?.(input);
                 }
               }}
-              className="relative rounded-2xl border border-white/20 bg-black/80 backdrop-blur-xl shadow-2xl flex items-center gap-3 px-3 py-1 sm:py-2 transition-all duration-200"
+              className="relative rounded-2xl border border-white/20 bg-black/80 backdrop-blur-xl shadow-2xl transition-all duration-200 overflow-hidden pt-2"
             >
               {loading && <div className="loading-underline" />}
-              
-              {/* Upload button - larger on mobile */}
-              <button
-                type="button"
-                aria-label="Upload files"
-                title="Upload files"
-                disabled={loading}
-                onClick={() => fileInputRef.current?.click()}
-                className="inline-flex items-center justify-center w-8 h-8 sm:w-8 sm:h-8 rounded-full text-white/60 hover:text-white hover:bg-white/10 transition-colors border border-white/20 flex-shrink-0"
-              >
-                <Plus size={18} className="sm:w-[18px] sm:h-[18px]" />
-              </button>
-              
-              {/* Text input area */}
-              <div className="flex-1 min-w-0 relative">
-                <textarea
-                  id="chat-input"
-                  name="chat-input"
-                  value={input}
-                  onChange={handleInputChange}
-                  onKeyDown={handleKeyDown}
-                  placeholder={loading ? "Waiting for reply..." : creatingSession ? "Creating new chat..." : "Hey soumya"}
-                  ref={inputRef}
-                  rows={1}
-                  className="w-full bg-transparent text-white px-2 py-0 outline-none placeholder:text-white/40 resize-none overflow-y-auto text-sm sm:text-base"
-                  style={{
-                    border: 'none',
-                    boxShadow: 'none',
-                    minHeight: '0px'
-                  }}
-                />
-                {transcribing && (
-                  <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-white/60">
-                    Transcribing{transcribingDots}
-                  </span>
-                )}
+
+              {/* Mobile: Two-row layout, Desktop: Single row */}
+              <div className="md:hidden">
+                {/* Mobile Upper Row - Text Input */}
+                <div className="px-2 py-1">
+                  <div className="relative">
+                    <textarea
+                      id="chat-input"
+                      name="chat-input"
+                      value={input}
+                      onChange={handleInputChange}
+                      onKeyDown={handleKeyDown}
+                      placeholder={loading ? "Waiting for reply..." : creatingSession ? "Creating new chat..." : "Hey soumya"}
+                      ref={inputRef}
+                      rows={1}
+                      className="w-full bg-transparent text-white px-0 py-0.5 outline-none placeholder:text-white/40 resize-none overflow-y-auto text-sm sm:text-base"
+                      style={{
+                        border: 'none',
+                        boxShadow: 'none',
+                        minHeight: '0px'
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Mobile Lower Row - Action Buttons */}
+                <div className="flex items-center justify-between px-2 py-0.5">
+                  {/* Left side - Attachment button */}
+                  <button
+                    type="button"
+                    aria-label="Upload files"
+                    title="Upload files"
+                    disabled={loading}
+                    onClick={() => fileInputRef.current?.click()}
+                    className="inline-flex items-center justify-center w-7 h-7 text-white/60 hover:text-white hover:bg-white/10 transition-colors flex-shrink-0 rounded-lg"
+                  >
+                    <Paperclip size={20} className="sm:w-[20px] sm:h-[20px]" />
+                  </button>
+
+                  {/* Right side - Mic and Send buttons */}
+                  <div className="flex items-center gap-1">
+                    {/* Microphone button */}
+                    <button
+                      type="button"
+                      aria-label={recording ? "Stop recording" : transcribing ? "Transcribing..." : "Start recording"}
+                      title={recording ? "Stop recording" : transcribing ? "Transcribing..." : "Start recording (F5 / F2 / Cmd+M)"}
+                      onClick={() => {
+                        if (recording) {
+                          stopRecording();
+                        } else if (!transcribing) {
+                          startRecording();
+                        }
+                      }}
+                      className={"inline-flex items-center justify-center w-7 h-7 rounded-xl border transition-all duration-200 flex-shrink-0 relative " + (recording ? "bg-red-500/20 text-red-400 border-red-500/30" : transcribing ? "bg-blue-500/20 text-blue-400 border-blue-500/30" : "text-white/60 hover:text-white hover:bg-white/10 border-white/20")}
+                    >
+                      <div className="relative">
+                        {/* Show mic icon only when not recording or transcribing */}
+                        {!recording && !transcribing && (
+                          <Mic size={20} className="sm:w-[20px] sm:h-[20px]" />
+                        )}
+                        {recording && (
+                          // Wave animation for recording
+                          <div className="flex items-center justify-center">
+                            <div className="flex space-x-0.5">
+                              <div className="w-0.5 h-2 bg-red-400 animate-pulse" style={{ animationDelay: '0ms', animationDuration: '1s' }}></div>
+                              <div className="w-0.5 h-3 bg-red-400 animate-pulse" style={{ animationDelay: '200ms', animationDuration: '1s' }}></div>
+                              <div className="w-0.5 h-2 bg-red-400 animate-pulse" style={{ animationDelay: '400ms', animationDuration: '1s' }}></div>
+                            </div>
+                          </div>
+                        )}
+                        {transcribing && (
+                          // Loading spinner for transcribing
+                          <div className="flex items-center justify-center">
+                            <div className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+                          </div>
+                        )}
+                      </div>
+                    </button>
+
+                    {/* Send button */}
+                    <button
+                      type="submit"
+                      disabled={loading}
+                      aria-label="Send"
+                      title="Send"
+                      className="inline-flex items-center justify-center w-20 h-6 rounded-xl bg-white text-black/80 disabled:opacity-50 hover:bg-gray-100 border border-white/20 shadow-md flex-shrink-0 transition-all duration-200 px-2"
+                    >
+                      <span className="text-sm font-medium">Send</span>
+                    </button>
+                  </div>
+                </div>
               </div>
-              
+
+              {/* Desktop: Single row layout */}
+              <div className="hidden md:flex items-center gap-3 px-4 py-4">
+                {/* Upload button */}
+                <button
+                  type="button"
+                  aria-label="Upload files"
+                  title="Upload files"
+                  disabled={loading}
+                  onClick={() => fileInputRef.current?.click()}
+                  className="inline-flex items-center justify-center w-9 h-9 text-white/60 hover:text-white hover:bg-white/10 transition-colors flex-shrink-0 rounded-lg"
+                >
+                  <Paperclip size={18} className="sm:w-[18px] sm:h-[18px]" />
+                </button>
+
+                {/* Text input area */}
+                <div className="flex-1 min-w-0 relative">
+                  <textarea
+                    id="chat-input"
+                    name="chat-input"
+                    value={input}
+                    onChange={handleInputChange}
+                    onKeyDown={handleKeyDown}
+                    placeholder={loading ? "Waiting for reply..." : creatingSession ? "Creating new chat..." : "Hey soumya"}
+                    ref={inputRef}
+                    rows={1}
+                    className="w-full bg-transparent text-white px-2 py-1 outline-none placeholder:text-white/40 resize-none overflow-y-auto text-sm sm:text-base"
+                    style={{
+                      border: 'none',
+                      boxShadow: 'none',
+                      minHeight: '0px'
+                    }}
+                  />
+                </div>
+
+                {/* Microphone button */}
+                <button
+                  type="button"
+                  aria-label={recording ? "Stop recording" : transcribing ? "Transcribing..." : "Start recording"}
+                  title={recording ? "Stop recording" : transcribing ? "Transcribing..." : "Start recording (F5 / F2 / Cmd+M)"}
+                  onClick={() => {
+                    if (recording) {
+                      stopRecording();
+                    } else if (!transcribing) {
+                      startRecording();
+                    }
+                  }}
+                  className={"inline-flex items-center justify-center w-9 h-9 rounded-xl border transition-all duration-200 flex-shrink-0 relative " + (recording ? "bg-red-500/20 text-red-400 border-red-500/30" : transcribing ? "bg-blue-500/20 text-blue-400 border-blue-500/30" : "text-white/60 hover:text-white hover:bg-white/10 border-white/20")}
+                >
+                  <div className="relative">
+                    {/* Show mic icon only when not recording or transcribing */}
+                    {!recording && !transcribing && (
+                      <Mic size={18} className="sm:w-[18px] sm:h-[18px]" />
+                    )}
+                    {recording && (
+                      // Wave animation for recording
+                      <div className="flex items-center justify-center">
+                        <div className="flex space-x-0.5">
+                          <div className="w-0.5 h-2 bg-red-400 animate-pulse" style={{ animationDelay: '0ms', animationDuration: '1s' }}></div>
+                          <div className="w-0.5 h-3 bg-red-400 animate-pulse" style={{ animationDelay: '200ms', animationDuration: '1s' }}></div>
+                          <div className="w-0.5 h-2 bg-red-400 animate-pulse" style={{ animationDelay: '400ms', animationDuration: '1s' }}></div>
+                        </div>
+                      </div>
+                    )}
+                    {transcribing && (
+                      // Loading spinner for transcribing
+                      <div className="flex items-center justify-center">
+                        <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+                      </div>
+                    )}
+                  </div>
+                </button>
+
+                {/* Send button */}
+                <button
+                  type="submit"
+                  disabled={loading}
+                  aria-label="Send"
+                  title="Send"
+                  className="inline-flex items-center justify-center w-10 h-8 rounded-full bg-white text-black/80 disabled:opacity-50 hover:bg-gray-100 border border-white/20 shadow-md flex-shrink-0 transition-all duration-200"
+                >
+                  <ArrowRight size={16} className="sm:w-[16px] sm:h-[16px]" />
+                </button>
+              </div>
+
               {/* Hidden file input */}
               <input
                 type="file"
@@ -684,33 +826,6 @@ export default function Home() {
                 }}
                 className="hidden"
               />
-              
-              {/* Action buttons - larger on mobile */}
-              <button
-                type="button"
-                aria-label={recording ? "Stop recording" : "Start recording"}
-                title={recording ? "Stop recording" : "Start recording (F5 / F2 / Cmd+M)"}
-                onClick={() => { 
-                  if (recording) {
-                    stopRecording(); 
-                  } else {
-                    startRecording();
-                  }
-                }}
-                className={"inline-flex items-center justify-center w-8 h-8 sm:w-8 sm:h-8 rounded-full transition-all duration-200 flex-shrink-0 " + (recording ? "bg-white/20 text-white border border-white/30 animate-pulse" : "text-white/60 hover:text-white hover:bg-white/10 border border-white/20")}
-              >
-                <Mic size={18} className="sm:w-[18px] sm:h-[18px]" />
-              </button>
-              
-              <button
-                type="submit"
-                disabled={loading}
-                aria-label="Send"
-                title="Send"
-                className="inline-flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white/20 text-white disabled:opacity-50 hover:bg-white/30 border border-white/30 shadow-lg flex-shrink-0"
-              >
-                <SendHorizonal size={18} className="sm:w-[18px] sm:h-[18px]" />
-              </button>
             </form>
           </div>
         </div>
