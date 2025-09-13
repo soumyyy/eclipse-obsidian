@@ -546,23 +546,37 @@ export default function Home() {
 
         <main className="flex-1">
           <div ref={listRef} className="scrollbar-thin max-w-5xl mx-auto px-2 sm:px-3 lg:px-6 py-3 sm:py-5 space-y-3 sm:space-y-3.5 overflow-y-auto" style={{ maxHeight: "calc(100dvh - 140px)", scrollbarGutter: "stable both-edges" }}>
-            {messages.map((m, i) => {
-              // Use a stable key based on role, content hash, and index
-              const contentHash = m.content.substring(0, 20).replace(/\s+/g, '-').toLowerCase();
-              const stableKey = `${m.role}-${contentHash}-${i}`;
-              return (
-                <Message
-                  key={stableKey}
-                  role={m.role}
-                  content={m.content}
-                  sources={m.sources}
-                  attachments={m.attachments}
-                  taskCandidates={taskCandByIndex[i] || []}
-                  onTaskAdd={(title: string) => handleTaskAdd(title)()}
-                  onTaskDismiss={handleTaskDismiss(i)}
-                />
-              );
-            })}
+            {(() => {
+              console.log("DEBUG: Rendering messages in main page, total count:", messages.length);
+              console.log("DEBUG: Messages to render:", messages.map((m, idx) => ({
+                index: idx,
+                role: m.role,
+                contentLength: m.content?.length || 0,
+                contentPreview: (m.content || "").substring(0, 50) + ((m.content || "").length > 50 ? "..." : ""),
+                formatted: m.formatted
+              })));
+
+              return messages.map((m, i) => {
+                // Use a stable key based on role, content hash, and index
+                const contentHash = m.content.substring(0, 20).replace(/\s+/g, '-').toLowerCase();
+                const stableKey = `${m.role}-${contentHash}-${i}`;
+
+                console.log(`DEBUG: Rendering message ${i}: role=${m.role}, contentLength=${m.content.length}, key=${stableKey}`);
+
+                return (
+                  <Message
+                    key={stableKey}
+                    role={m.role}
+                    content={m.content}
+                    sources={m.sources}
+                    attachments={m.attachments}
+                    taskCandidates={taskCandByIndex[i] || []}
+                    onTaskAdd={(title: string) => handleTaskAdd(title)()}
+                    onTaskDismiss={handleTaskDismiss(i)}
+                  />
+                );
+              });
+            })()}
             {/* Removed in-message typing loader for minimal design */}
           </div>
         </main>

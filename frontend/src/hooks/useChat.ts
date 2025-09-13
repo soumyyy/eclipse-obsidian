@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import React, { useState, useRef, useCallback } from "react";
 import { flushSync } from "react-dom";
 import { apiChatStream, apiSessionUpdateTitle } from "@/lib/api";
 import { getBackendUrl } from "@/utils/config";
@@ -187,13 +187,27 @@ export function useChat() {
       let streamFinished = false;
 
       try {
+        let receivedAnyData = false;
+        let totalDataReceived = 0;
+
         while (true) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) {
+            console.log("DEBUG: Stream reader done, total data received:", totalDataReceived, "bytes");
+            break;
+          }
+
+          const chunkSize = value.length;
+          totalDataReceived += chunkSize;
+          receivedAnyData = true;
+
+          console.log("DEBUG: Received stream chunk, size:", chunkSize, "bytes, total so far:", totalDataReceived);
 
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split('\n');
           buffer = lines.pop() || '';
+
+          console.log("DEBUG: Processing", lines.length, "lines from chunk");
 
           for (const line of lines) {
             // Blank line indicates end of the current SSE event
@@ -203,18 +217,26 @@ export function useChat() {
                 if (currentEvent === 'final') {
                   finalBuffer = payload;
                   accumulatedContent = payload;
+                  console.log("DEBUG: Processing final event, payload length:", payload.length, "payload preview:", payload.substring(0, 100) + (payload.length > 100 ? "..." : ""));
+
                   // Handle final event - check if we need to create assistant message or update existing one
                   setMessages(prev => {
+                    console.log("DEBUG: Final event - current messages:", prev.map(m => ({ role: m.role, contentLength: m.content.length })));
                     const lastMessage = prev[prev.length - 1];
                     if (lastMessage && lastMessage.role === 'assistant') {
                       // Update existing assistant message
-                      return prev.map((msg, idx) =>
+                      console.log("DEBUG: Updating existing assistant message with final content");
+                      const updated = prev.map((msg, idx) =>
                         idx === prev.length - 1 ? { ...msg, content: payload, formatted: true } : msg
                       );
+                      console.log("DEBUG: Messages after final update:", updated.map(m => ({ role: m.role, contentLength: m.content.length })));
+                      return updated;
                     } else {
                       // No assistant message exists, create one (cached response case)
                       console.log("DEBUG: Creating new assistant message for final/cached response");
-                      return [...prev, { role: 'assistant' as const, content: payload, sources: [], formatted: true }];
+                      const newMessages = [...prev, { role: 'assistant' as const, content: payload, sources: [], formatted: true }];
+                      console.log("DEBUG: Messages after creating assistant:", newMessages.map(m => ({ role: m.role, contentLength: m.content.length })));
+                      return newMessages;
                     }
                   });
                   // Drain any pending typewriter buffer and stop it
@@ -259,6 +281,7 @@ export function useChat() {
                 console.log("DEBUG: Stream started successfully");
                 // Stream initialization - no action needed
               } else if (currentEvent === 'delta' && data && !streamFinished) {
+                console.log("DEBUG: Processing delta event with data length:", data.length, "data preview:", data.substring(0, 50) + (data.length > 50 ? "..." : ""));
                 // On first delta, add assistant message and start typewriter
                 if (!receivedFirstDeltaRef.current) {
                   console.log("DEBUG: First delta received, adding assistant message");
@@ -267,10 +290,13 @@ export function useChat() {
                   setMessages(prev => {
                     console.log("DEBUG: Adding assistant message, total messages will be:", prev.length + 1);
                     console.log("DEBUG: Current messages before adding assistant:", prev.map(m => ({ role: m.role, content: m.content.substring(0, 20) + "..." })));
-                    return [...prev, { role: 'assistant' as const, content: '', sources: [], formatted: false }];
+                    const newMessages = [...prev, { role: 'assistant' as const, content: '', sources: [], formatted: false }];
+                    console.log("DEBUG: Messages after adding assistant:", newMessages.map(m => ({ role: m.role, contentLength: m.content.length })));
+                    return newMessages;
                   });
                 }
                 typewriterRef.current.buffer += data;
+                console.log("DEBUG: Added to typewriter buffer, new buffer length:", typewriterRef.current.buffer.length);
                 startTypewriter();
               } else if (currentEvent === 'message' && data === '[DONE]') {
                 // Alternative [DONE] format from backend
@@ -392,6 +418,17 @@ export function useChat() {
       }
     }
   };
+
+  // Debug: Log messages whenever they change
+  React.useEffect(() => {
+    console.log("DEBUG: useChat messages updated:", messages.map((m, idx) => ({
+      index: idx,
+      role: m.role,
+      contentLength: m.content?.length || 0,
+      contentPreview: (m.content || "").substring(0, 30) + ((m.content || "").length > 30 ? "..." : ""),
+      formatted: m.formatted
+    })));
+  }, [messages]);
 
   return {
     messages,
