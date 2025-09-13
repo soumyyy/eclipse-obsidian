@@ -32,17 +32,25 @@ export function useTaskManagement() {
     console.log("DEBUG: extractTaskCandidates called for message:", userMessage.substring(0, 30) + "...", "at index:", userIndex);
     try {
       const data = await apiTasksExtract(userMessage);
-      const cands = (data.candidates || []).map((c: { title: string; due_ts?: number; confidence?: number }) => ({
-        title: c.title,
-        due_ts: c.due_ts,
-        confidence: c.confidence
-      }));
-      console.log("DEBUG: Found", cands.length, "task candidates");
-      if (cands.length) {
-        setTaskCandByIndex((prev: Record<number, TaskCandidate[]>) => ({ ...prev, [userIndex]: cands }));
+      console.log("DEBUG: Task extraction response:", data);
+
+      if (data && data.candidates) {
+        const cands = data.candidates.map((c: { title: string; due_ts?: number; confidence?: number }) => ({
+          title: c.title,
+          due_ts: c.due_ts,
+          confidence: c.confidence
+        }));
+        console.log("DEBUG: Found", cands.length, "task candidates");
+        if (cands.length) {
+          setTaskCandByIndex((prev: Record<number, TaskCandidate[]>) => ({ ...prev, [userIndex]: cands }));
+        }
+      } else {
+        console.log("DEBUG: No candidates found in response:", data);
       }
     } catch (error) {
       console.error("Failed to extract task candidates:", error);
+      // Don't throw the error, just log it so the chat flow continues
+      console.log("DEBUG: Continuing without task extraction due to error");
     }
   }, []);
 

@@ -40,7 +40,7 @@ export default function Home() {
       el.style.height = 'auto';
       el.style.height = Math.min(el.scrollHeight, 160) + 'px';
     }
-  }, []);
+  }, [setInput]);
 
   const sendMessageRef = useRef<((message: string) => Promise<void>) | null>(null);
 
@@ -118,17 +118,17 @@ export default function Home() {
   const createNewChatSession = useCallback(async () => {
     try {
       setCreatingSession(true);
-      
+
       // Clear all current context to prevent bleeding
       setMessages([]);
       setPendingFiles([]);
-      
+
       // Generate session ID in backend-compatible format
       const newSessionId = `session_${Math.floor(Date.now() / 1000)}`;
-      
+
       // Generate a default title that will be updated after first message
       const defaultTitle = `New Chat ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-      
+
       const response = await fetch(`${getBackendUrl()}/api/sessions`, {
         method: "POST",
         headers: {
@@ -141,16 +141,16 @@ export default function Home() {
           session_id: newSessionId
         })
       });
-      
+
       if (response.ok) {
         await response.json();
         setActiveSession(newSessionId);
-        
+
         // Store new session ID in localStorage for persistence (only on client)
         if (isClient) {
           localStorage.setItem('eclipse_session_id', newSessionId);
         }
-        
+
         inputRef.current?.focus();
       }
     } catch (error) {
@@ -158,7 +158,7 @@ export default function Home() {
     } finally {
       setCreatingSession(false);
     }
-  }, [isClient]);
+  }, [isClient, setMessages, setPendingFiles]);
 
   const handleSessionSelect = async (sessionId: string) => {
     // Clear current session context to prevent bleeding
@@ -203,7 +203,7 @@ export default function Home() {
   // Load data and initialize on mount
   useEffect(() => {
     if (!isClient) return;
-    
+
     // Load persisted messages
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -212,7 +212,7 @@ export default function Home() {
         if (Array.isArray(parsed)) setMessages(parsed);
       }
     } catch {}
-    
+
     // Load sessions
     (async () => {
       try {
@@ -227,7 +227,7 @@ export default function Home() {
           is_active: Boolean(s.is_active),
         }));
         setPrefetchedSessions(sessions);
-        
+
           localStorage.setItem("eclipse_chat_sessions_cache", JSON.stringify({
           sessions, timestamp: Date.now()
           }));
@@ -236,7 +236,7 @@ export default function Home() {
 
     // Focus input
     inputRef.current?.focus();
-  }, [isClient]);
+  }, [isClient, setMessages]);
 
   // Persist messages on change
   useEffect(() => {
@@ -269,6 +269,65 @@ export default function Home() {
     }
   };
 
+  const startRecording = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordedChunksRef.current = [];
+      const mr = new MediaRecorder(stream);
+      mediaRecorderRef.current = mr;
+      mr.ondataavailable = (evt) => {
+        if (evt.data && evt.data.size > 0) recordedChunksRef.current.push(evt.data);
+      };
+      mr.onstop = async () => {
+        setTranscribing(true);
+        try {
+          if (transcribeIntervalRef.current) {
+            clearInterval(transcribeIntervalRef.current);
+          }
+        } catch {}
+        transcribeIntervalRef.current = setInterval(() => {
+          setTranscribingDots((d) => (d.length >= 3 ? "" : d + "."));
+        }, 350);
+        try {
+          const blob = new Blob(recordedChunksRef.current, { type: mr.mimeType || 'audio/webm' });
+          const form = new FormData();
+          form.append('audio', blob, 'audio.webm');
+          const resp = await fetch('/api/transcribe', { method: 'POST', body: form });
+          const data = await resp.json();
+          if (!resp.ok) throw new Error((data as { error?: string })?.error || 'Transcription failed');
+          const txt = (data as { text?: string })?.text || '';
+          setInput((prev) => (prev ? prev + ' ' + txt : txt));
+          inputRef.current?.focus();
+        } catch (err: unknown) {
+          const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
+          console.error(errorMessage);
+        } finally {
+          // release tracks
+          stream.getTracks().forEach(t => t.stop());
+          setTranscribing(false);
+          try {
+            if (transcribeIntervalRef.current) {
+              clearInterval(transcribeIntervalRef.current);
+            }
+          } catch {}
+          setTranscribingDots("");
+        }
+      };
+      mr.start();
+      setRecording(true);
+    } catch (err) {
+      console.error(err);
+      setRecording(false);
+    }
+  }, [setInput, setTranscribing, setTranscribingDots, setRecording]);
+
+  const stopRecording = useCallback(() => {
+    try {
+      mediaRecorderRef.current?.stop();
+    } catch {}
+    setRecording(false);
+  }, [setRecording]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
@@ -292,7 +351,7 @@ export default function Home() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [recording, showTasks, createNewChatSession]);
+  }, [recording, showTasks, createNewChatSession, startRecording, stopRecording]);
 
   const [isSendingMessage, setIsSendingMessage] = useState(false);
 
@@ -355,64 +414,6 @@ export default function Home() {
   }
 
 
-  async function startRecording() {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      recordedChunksRef.current = [];
-      const mr = new MediaRecorder(stream);
-      mediaRecorderRef.current = mr;
-      mr.ondataavailable = (evt) => {
-        if (evt.data && evt.data.size > 0) recordedChunksRef.current.push(evt.data);
-      };
-      mr.onstop = async () => {
-        setTranscribing(true);
-        try { 
-          if (transcribeIntervalRef.current) {
-            clearInterval(transcribeIntervalRef.current); 
-          }
-        } catch {}
-        transcribeIntervalRef.current = setInterval(() => {
-          setTranscribingDots((d) => (d.length >= 3 ? "" : d + "."));
-        }, 350);
-        try {
-          const blob = new Blob(recordedChunksRef.current, { type: mr.mimeType || 'audio/webm' });
-          const form = new FormData();
-          form.append('audio', blob, 'audio.webm');
-          const resp = await fetch('/api/transcribe', { method: 'POST', body: form });
-          const data = await resp.json();
-          if (!resp.ok) throw new Error((data as { error?: string })?.error || 'Transcription failed');
-          const txt = (data as { text?: string })?.text || '';
-          setInput((prev) => (prev ? prev + ' ' + txt : txt));
-          inputRef.current?.focus();
-        } catch (err: unknown) {
-          const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-          console.error(errorMessage);
-        } finally {
-          // release tracks
-          stream.getTracks().forEach(t => t.stop());
-          setTranscribing(false);
-          try { 
-            if (transcribeIntervalRef.current) {
-              clearInterval(transcribeIntervalRef.current); 
-            }
-          } catch {}
-          setTranscribingDots("");
-        }
-      };
-      mr.start();
-      setRecording(true);
-    } catch (err) {
-      console.error(err);
-      setRecording(false);
-    }
-  }
-
-  function stopRecording() {
-    try {
-      mediaRecorderRef.current?.stop();
-    } catch {}
-    setRecording(false);
-  }
 
 
 
@@ -423,7 +424,7 @@ export default function Home() {
       if (!e.clipboardData) return;
       const items = e.clipboardData.items;
       if (!items || items.length === 0) return;
-      
+
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
         if (item.type.startsWith("text/")) {
@@ -449,7 +450,7 @@ export default function Home() {
     return () => {
       el.removeEventListener('paste', onPaste as unknown as EventListener);
     };
-  }, []);
+  }, [setInput, setPendingFiles]);
 
   return (
     <div className="min-h-screen bg-black text-white">
@@ -590,7 +591,15 @@ export default function Home() {
             )}
             
             {/* Main input bar */}
-            <div className="relative rounded-2xl border border-white/20 bg-black/80 backdrop-blur-xl shadow-2xl flex items-center gap-3 px-3 py-1 sm:py-2 transition-all duration-200">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (input.trim() && !loading) {
+                  sendMessageRef.current?.(input);
+                }
+              }}
+              className="relative rounded-2xl border border-white/20 bg-black/80 backdrop-blur-xl shadow-2xl flex items-center gap-3 px-3 py-1 sm:py-2 transition-all duration-200"
+            >
               {loading && <div className="loading-underline" />}
               
               {/* Upload button - larger on mobile */}
@@ -676,7 +685,7 @@ export default function Home() {
               >
                 <SendHorizonal size={18} className="sm:w-[18px] sm:h-[18px]" />
               </button>
-            </div>
+            </form>
           </div>
         </div>
         <Sound play={messages[messages.length - 1]?.role === "assistant"} />
