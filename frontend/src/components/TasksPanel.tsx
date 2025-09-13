@@ -73,7 +73,7 @@ export default function TasksPanel({ isOpen, onClose }: TasksPanelProps) {
 
   return (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-2 sm:p-4" onClick={onClose}>
-      <div className="bg-black/95 backdrop-blur-xl border border-white/20 rounded-2xl w-full max-w-md max-h-[80vh] overflow-hidden shadow-2xl" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-black/95 backdrop-blur-xl border border-white/20 rounded-2xl w-full max-w-md h-[80vh] max-h-[80vh] shadow-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between p-3 sm:p-4 border-b border-white/20">
           <h2 className="text-lg sm:text-xl font-semibold text-white">Tasks</h2>
@@ -107,7 +107,7 @@ export default function TasksPanel({ isOpen, onClose }: TasksPanelProps) {
         </div>
 
         {/* Tasks List */}
-        <div className="flex-1 overflow-y-auto p-3 sm:p-4">
+        <div className="flex-1 overflow-y-auto p-3 sm:p-4 scrollbar" style={{ maxHeight: 'calc(80vh - 120px)' }}>
           {isLoading ? (
             <div className="text-center py-8">
               <div className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin mx-auto mb-3"></div>
@@ -116,6 +116,20 @@ export default function TasksPanel({ isOpen, onClose }: TasksPanelProps) {
           ) : tasks.length === 0 ? (
             <div className="text-center py-8">
               <p className="text-white/60 text-sm">No tasks yet. Add one above!</p>
+              {/* Test content for scrollbar visibility */}
+              <div className="mt-8 space-y-2">
+                {Array.from({ length: 15 }, (_, i) => (
+                  <div key={i} className="flex items-center gap-3 p-3 bg-white/5 border border-white/10 rounded-lg">
+                    <div className="w-5 h-5 rounded-full border-2 border-white/30 flex items-center justify-center">
+                      <span className="text-xs text-white/60">○</span>
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm text-white/90">Test Task {i + 1}</p>
+                      <p className="text-xs text-white/50">This is test content to check scrollbar visibility</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           ) : (
             <div className="space-y-2">

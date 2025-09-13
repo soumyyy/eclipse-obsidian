@@ -301,9 +301,9 @@ export default function ChatSidebar({
       )}
       
       {/* Floating Sidebar with Apple-like minimalism */}
-      <div className={`fixed left-0 sm:left-4 top-0 sm:top-4 h-full sm:h-[calc(100vh-2rem)] w-full sm:w-80 bg-black/95 backdrop-blur-2xl border border-white/10 rounded-none sm:rounded-3xl shadow-2xl transform transition-all duration-500 ease-out z-50 ${
-        isOpen 
-          ? 'translate-x-0 opacity-100 scale-100' 
+      <div className={`fixed left-0 sm:left-4 top-0 sm:top-4 h-full sm:h-[calc(100vh-2rem)] w-full sm:w-80 bg-black/95 backdrop-blur-2xl border border-white/10 rounded-none sm:rounded-3xl shadow-2xl transform transition-all duration-500 ease-out z-50 flex flex-col ${
+        isOpen
+          ? 'translate-x-0 opacity-100 scale-100'
           : '-translate-x-full opacity-0 scale-95'
       }`}>
         {/* Header with minimal styling */}
@@ -348,7 +348,7 @@ export default function ChatSidebar({
         </div>
 
         {/* Sessions List with clean spacing */}
-        <div className="flex-1 overflow-y-auto px-3 sm:px-3 pb-3">
+        <div className="flex-1 overflow-y-auto px-3 sm:px-3 pb-3 scrollbar" style={{ maxHeight: 'calc(100vh - 200px)' }}>
           {/* Mobile-only quick actions moved from header */}
           {isMobile && (
             <div className="px-1 py-2 flex items-center gap-2">
@@ -383,6 +383,15 @@ export default function ChatSidebar({
               </div>
               <p className="text-sm font-medium mb-1">No chats yet</p>
               <p className="text-xs text-white/40">Start a new conversation to begin</p>
+              {/* Test content for scrollbar visibility */}
+              <div className="mt-8 space-y-2">
+                {Array.from({ length: 20 }, (_, i) => (
+                  <div key={i} className="p-3 bg-white/5 rounded-lg text-left">
+                    <p className="text-xs text-white/40">Test Session {i + 1}</p>
+                    <p className="text-xs text-white/30 truncate">This is test content to check scrollbar visibility</p>
+                  </div>
+                ))}
+              </div>
             </div>
           ) : (
             <div className="space-y-2">
@@ -475,7 +484,7 @@ export default function ChatSidebar({
         </div>
 
         {/* Footer with minimal branding */}
-        <div className="border-t border-white/10 p-4 sm:p-6 bg-white/5 rounded-b-none sm:rounded-b-3xl">
+        <div className="flex-shrink-0 border-t border-white/10 p-4 sm:p-6 bg-white/5 rounded-b-none sm:rounded-b-3xl">
           <div className="flex items-center justify-center gap-2 text-sm text-white/50">
             <Sparkles className="h-4 w-4 text-white/40" />
             <span className="font-medium">Eclipse AI</span>

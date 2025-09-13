@@ -22,11 +22,6 @@ export interface MessageProps {
 
 export default function Message({ role, content, attachments, sources, stickyTopRight, outerRef, taskCandidates, onTaskAdd, onTaskDismiss }: MessageProps) {
   const isUser = role === "user";
-  // Do not render any assistant bubble when it's just a placeholder (empty content)
-  if (!isUser && (!content || content.trim().length === 0)) {
-    return null;
-  }
-  const isAssistantPlaceholder = !isUser && (!content || content.trim().length === 0);
   const normalized = React.useMemo(() => {
     if (isUser) return content;
     let txt = content || "";

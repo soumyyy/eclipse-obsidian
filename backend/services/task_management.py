@@ -15,59 +15,89 @@ def smart_detect_task(message: str) -> Optional[str]:
     if not message or len(message.strip()) < 10:
         return None
 
+    # Clean the message for analysis
+    msg_lower = message.lower().strip()
+
+    # Skip obvious non-task messages
+    skip_patterns = [
+        r"^(hi|hello|hey|good morning|good afternoon|good evening|how are you|how's it going|what's up)",
+        r"^(thanks?|thank you|awesome|great|cool|nice|wow)",
+        r"^(yes|no|okay|ok|sure|alright|fine)",
+        r"^(tell me|explain|what is|how do|can you)",
+        r"^(this is|that's|its|it's)",
+        r"^(analyze|provide|give me|show me)",
+    ]
+    for pattern in skip_patterns:
+        if re.search(pattern, msg_lower):
+            return None
+
     # Quick regex check for explicit task indicators
     explicit_patterns = [
         r"\s*(task:|todo:)\s*(.+)$",
-        r"\b(?:remind me to|remember to)\s+(.+?)(?:\.|$)",
-        r"\b(?:i need to|i should|i must)\s+(.+?)(?:\.|$)",
-        r"\b(?:add|create|make)\s+(?:a\s+)?task\s+(?:to\s+)?(.+?)(?:\.|$)",
-        r"\b(?:don't forget|don't forget to)\s+(.+?)(?:\.|$)",
+        r"\b(?:remind me to|remember to)\s+(.+?)(?:\.|$|!|\?|$)",
+        r"\b(?:i need to|i should|i must)\s+(.+?)(?:\.|$|!|\?|$)",
+        r"\b(?:add|create|make)\s+(?:a\s+)?task\s+(?:to\s+)?(.+?)(?:\.|$|!|\?|$)",
+        r"\b(?:don't forget|don't forget to)\s+(.+?)(?:\.|$|!|\?|$)",
     ]
     for pattern in explicit_patterns:
         m = re.search(pattern, message, flags=re.I)
         if m and m.group(1).strip():
-            return m.group(1).strip()
-
-    # AI-powered detection for implicit tasks
-    try:
-        from clients.llm_cerebras import cerebras_chat_with_model
-
-        system_prompt = (
-            "You are a task detection expert. Analyze the user's message and determine "
-            "if they're expressing a need to do something. If it is a task, respond with "
-            "ONLY the task description in clear, actionable language. Otherwise respond with NO_TASK."
-        )
-
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Analyze this message: {message}"},
-        ]
-        response = cerebras_chat_with_model(messages, temperature=0.1, max_tokens=100)
-        if response and response.strip() != "NO_TASK":
-            task = response.strip()
-            if task.startswith("Task: "):
-                task = task[6:]
-            if task.startswith("Response: "):
-                task = task[10:]
-            if 5 < len(task) < 200:
-                if os.getenv("TASK_DETECTION_DEBUG", "false").lower() in ("1", "true", "yes"):
-                    print(f"[task_management] AI detected task: {task}")
+            task = m.group(1).strip()
+            if len(task) > 3 and not task.startswith("the message") and not task.startswith("Analyze"):
                 return task
-    except Exception as e:
-        if os.getenv("TASK_DETECTION_DEBUG", "false").lower() in ("1", "true", "yes"):
-            print(f"[task_management] AI detection failed: {e}")
 
-    # Fallbacks
+    # AI-powered detection for implicit tasks - only for longer messages with clear intent
+    if len(message.split()) >= 8:
+        try:
+            from clients.llm_cerebras import cerebras_chat_with_model
+
+            system_prompt = (
+                "You are a task detection expert. Analyze the user's message and determine "
+                "if they're expressing a clear intent to DO something specific and actionable. "
+                "Only respond with a task if it's something they need to remember or do later. "
+                "Examples of tasks: 'buy groceries', 'call mom', 'finish report', 'schedule meeting'. "
+                "Examples of non-tasks: greetings, questions, statements, compliments, analysis requests. "
+                "If it is a clear task, respond with ONLY the task description in 1-5 words. "
+                "Otherwise respond with exactly 'NO_TASK'."
+            )
+
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Message: {message}"},
+            ]
+            response = cerebras_chat_with_model(messages, temperature=0.1, max_tokens=50)
+            if response and response.strip() not in ["NO_TASK", "no_task", "No task", "no task"]:
+                task = response.strip()
+                # Clean up common AI artifacts
+                task = re.sub(r'^["\']|["\']$', '', task)  # Remove quotes
+                task = re.sub(r'^Task:\s*', '', task, flags=re.I)  # Remove "Task:" prefix
+                task = re.sub(r'^Response:\s*', '', task, flags=re.I)  # Remove "Response:" prefix
+
+                # Additional validation for AI responses
+                if (3 < len(task) < 100 and
+                    not any(skip_word in task.lower() for skip_word in ['analyze', 'the message', 'provide', 'explain', 'tell', 'show', 'give']) and
+                    not task.lower().startswith(('analyze', 'provide', 'explain', 'tell', 'show', 'give')) and
+                    not re.search(r'\b(message|content|text)\b', task.lower())):
+                    if os.getenv("TASK_DETECTION_DEBUG", "false").lower() in ("1", "true", "yes"):
+                        print(f"[task_management] AI detected task: {task}")
+                    return task
+        except Exception as e:
+            if os.getenv("TASK_DETECTION_DEBUG", "false").lower() in ("1", "true", "yes"):
+                print(f"[task_management] AI detection failed: {e}")
+
+    # Fallbacks - only for very clear action verbs
     fallback_patterns = [
-        r"\b(?:fix|solve|resolve|address)\s+(?:the\s+)?(.+?)(?:\.|$)",
-        r"\b(?:review|check|examine|analyze)\s+(?:the\s+)?(.+?)(?:\.|$)",
-        r"\b(?:update|modify|change|improve)\s+(?:the\s+)?(.+?)(?:\.|$)",
-        r"\b(?:prepare|organize|arrange|plan)\s+(?:the\s+)?(.+?)(?:\.|$)",
+        r"\b(?:fix|solve|resolve|address)\s+(?:the\s+)?(.+?)(?:\.|$|!|\?|$)",
+        r"\b(?:prepare|organize|arrange|plan)\s+(?:the\s+)?(.+?)(?:\.|$|!|\?|$)",
+        r"\b(?:schedule|book|reserve)\s+(?:the\s+)?(.+?)(?:\.|$|!|\?|$)",
+        r"\b(?:buy|purchase|get|order)\s+(.+?)(?:\.|$|!|\?|$)",
     ]
     for pattern in fallback_patterns:
         m = re.search(pattern, message, flags=re.I)
         if m and m.group(1).strip():
-            return m.group(1).strip()
+            task = m.group(1).strip()
+            if len(task) > 3 and not any(skip_word in task.lower() for skip_word in ['the message', 'analyze', 'provide']):
+                return task
 
     return None
 
@@ -85,35 +115,36 @@ def auto_capture_intents(user_id: str, text: str) -> None:
 
     created_any = False
 
-    # Task patterns (ordered)
-    task_patterns = [
-        re.compile(r"^\s*(?:remind(?:\s+me)?\s+to)\s+(.+)$", re.I),
-        re.compile(r"^\s*(?:create|add|make)\s+(?:a\s+)?(?:task|todo)[:,-]?\s+(.+)$", re.I),
-        re.compile(r"^\s*(?:todo|task)[:,-]?\s+(.+)$", re.I),
-        re.compile(r"\bfollow[- ]?up\s+on\s+(.+)$", re.I),
+    # Note patterns first (more specific)
+    note_patterns = [
+        re.compile(r"^\s*(?:please\s+)?(?:take\s+a\s+)?note(?:\s+(?:this|that))?[:,-]?\s*(.+)$", re.I),
+        re.compile(r"^\s*note\s*[:,-]?\s*(.+)$", re.I),
+        re.compile(r"^\s*remember\s+(?:that|this)[:,-]?\s+(.+)$", re.I),
+        re.compile(r"^\s*jot\s+(?:this|that)?(?:down)?[:,-]?\s*(.+)$", re.I),
     ]
-    for rx in task_patterns:
+    for rx in note_patterns:
         m = rx.search(line)
         if m and m.group(1).strip():
             try:
-                _add_task(user_id, m.group(1).strip())
+                _add_memory(user_id, m.group(1).strip(), mtype="note")
                 created_any = True
                 break
             except Exception:
                 pass
 
-    # Note patterns (only if not already created a task)
+    # Task patterns (only if not already created a note)
     if not created_any:
-        note_patterns = [
-            re.compile(r"^\s*(?:please\s+)?(?:take\s+a\s+)?note(?:\s+(?:this|that))?[:,-]?\s*(.+)$", re.I),
-            re.compile(r"^\s*note\s*[:,-]?\s*(.+)$", re.I),
-            re.compile(r"^\s*remember\s+(?:that\s+)?(.+)$", re.I),
+        task_patterns = [
+            re.compile(r"^\s*(?:remind(?:\s+me)?\s+to)\s+(.+)$", re.I),
+            re.compile(r"^\s*(?:create|add|make)\s+(?:a\s+)?(?:task|todo)[:,-]?\s+(.+)$", re.I),
+            re.compile(r"^\s*(?:todo|task)[:,-]?\s+(.+)$", re.I),
+            re.compile(r"\bfollow[- ]?up\s+on\s+(.+)$", re.I),
         ]
-        for rx in note_patterns:
+        for rx in task_patterns:
             m = rx.search(line)
             if m and m.group(1).strip():
                 try:
-                    _add_memory(user_id, m.group(1).strip(), mtype="note")
+                    _add_task(user_id, m.group(1).strip())
                     created_any = True
                     break
                 except Exception:

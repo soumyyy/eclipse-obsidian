@@ -1509,7 +1509,7 @@ def finish_task(task_id: int, user_id: str):
     return {"ok": ok}
 
 @app.post("/tasks/extract", dependencies=[Depends(require_api_key)])
-def extract_tasks(message: str, user_id: str = "soumya"):
+def extract_tasks(message: str = Form(...), user_id: str = "soumya"):
     """Extract potential tasks from a message using AI"""
     try:
         from services.task_management import smart_detect_task

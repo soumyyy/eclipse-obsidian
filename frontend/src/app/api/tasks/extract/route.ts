@@ -5,13 +5,16 @@ export async function POST(req: Request) {
   const token = process.env.NEXT_PUBLIC_BACKEND_TOKEN || process.env.BACKEND_API_KEY || process.env.BACKEND_TOKEN;
   try {
     const body = await req.json();
+    const formData = new URLSearchParams();
+    formData.append('message', body.message || '');
+
     const resp = await fetch(`${backendUrl}/tasks/extract`, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
         ...(token ? { "X-API-Key": token } : {}),
       },
-      body: JSON.stringify(body),
+      body: formData,
     });
     const data = await resp.json();
     return new Response(JSON.stringify(data), { status: resp.status, headers: { "Content-Type": "application/json" } });

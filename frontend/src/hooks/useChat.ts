@@ -1,97 +1,89 @@
 import { useState, useRef, useCallback } from "react";
-import { apiChatStream, apiSessionUpdateTitle, apiTasksExtract } from "@/lib/api";
+import { flushSync } from "react-dom";
+import { apiChatStream, apiSessionUpdateTitle } from "@/lib/api";
 import { getBackendUrl } from "@/utils/config";
-
-interface ChatMessage {
-  role: "user" | "assistant";
-  content: string;
-  sources?: { path: string; score: number }[];
-  formatted?: boolean;
-  attachments?: { name: string; type: string }[];
-}
-
-interface TaskCandidate {
-  title: string;
-  due_ts?: number;
-  confidence?: number;
-}
+import { ChatMessage } from "@/types/chat";
 
 export function useChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [slidingMessage, setSlidingMessage] = useState<ChatMessage | null>(null);
-  const [isSliding, setIsSliding] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
-  const [showThinking, setShowThinking] = useState(false);
-  
-  const streamingRef = useRef(false);
-  const typewriterRef = useRef<{ timer: ReturnType<typeof setInterval> | null; buffer: string }>({ timer: null, buffer: "" });
-  const thinkingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const thinkingDotsRef = useRef<string>("");
-  const receivedFirstDeltaRef = useRef<boolean>(false);
+  const receivedFirstDeltaRef = useRef(false);
 
-  const stopTypewriter = useCallback(() => {
-    try { if (typewriterRef.current.timer) { clearInterval(typewriterRef.current.timer); } } catch {}
-    typewriterRef.current.timer = null;
+  const streamingRef = useRef(false);
+  const typewriterRef = useRef<{ timer: ReturnType<typeof setInterval> | null; buffer: string }>({
+    timer: null,
+    buffer: ""
+  });
+
+  // Simplified typewriter effect
+  const updateTypewriter = useCallback(() => {
+    if (typewriterRef.current.buffer.length > 0) {
+      const nextNewline = typewriterRef.current.buffer.indexOf('\n');
+      const nextSpace = typewriterRef.current.buffer.indexOf(' ');
+
+      const chunk = nextNewline !== -1
+        ? typewriterRef.current.buffer.slice(0, nextNewline + 1)
+        : nextSpace !== -1
+          ? typewriterRef.current.buffer.slice(0, nextSpace + 1)
+          : typewriterRef.current.buffer;
+
+      typewriterRef.current.buffer = typewriterRef.current.buffer.slice(chunk.length);
+
+      setMessages(prev => prev.map((msg, idx) => {
+        if (idx === prev.length - 1 && msg.role === 'assistant') {
+          console.log("DEBUG: Typewriter updating assistant message content");
+          return { ...msg, content: (msg.content || "") + chunk };
+        }
+        return msg;
+      }));
+    } else if (!streamingRef.current) {
+      // Only update if streaming has actually ended (not just buffer empty)
+      if (typewriterRef.current.timer) {
+        clearInterval(typewriterRef.current.timer);
+        typewriterRef.current.timer = null;
+      }
+      // Don't update messages here - let the finally block handle final formatting
+    }
   }, []);
 
-  const ensureTypewriter = useCallback(() => {
+  const startTypewriter = useCallback(() => {
     if (typewriterRef.current.timer) return;
-    // Markdown-aware typewriter effect for better formatting
-    typewriterRef.current.timer = setInterval(() => {
-      if (typewriterRef.current.buffer.length > 0) {
-        // Find the next markdown-friendly boundary
-        let chunk = "";
-        const nextNewline = typewriterRef.current.buffer.indexOf('\n');
-        const nextSpace = typewriterRef.current.buffer.indexOf(' ');
-        
-        // Prioritize newlines to preserve markdown structure
-        if (nextNewline !== -1) {
-          chunk = typewriterRef.current.buffer.slice(0, nextNewline + 1);
-          typewriterRef.current.buffer = typewriterRef.current.buffer.slice(nextNewline + 1);
-        } else if (nextSpace !== -1) {
-          chunk = typewriterRef.current.buffer.slice(0, nextSpace + 1);
-          typewriterRef.current.buffer = typewriterRef.current.buffer.slice(nextSpace + 1);
-        } else {
-          // No more boundaries, take the rest
-          chunk = typewriterRef.current.buffer;
-          typewriterRef.current.buffer = "";
-        }
-        
-        setMessages(prev => prev.map((msg, idx) => 
-          idx === prev.length - 1 ? { ...msg, content: (msg.content || "") + chunk } : msg
-        ));
-      } else if (!streamingRef.current) {
-        // Stream finished and buffer drained - now mark as formatted
-        setMessages(prev => prev.map((msg, idx) => 
-          idx === prev.length - 1 ? { ...msg, formatted: true } : msg
-        ));
-        stopTypewriter();
-      }
-    }, 15); // Much faster typewriter effect
-  }, [stopTypewriter]);
+    typewriterRef.current.timer = setInterval(updateTypewriter, 15);
+  }, [updateTypewriter]);
 
-  const sendMessage = useCallback(async (userMessage: string, activeSession: string, extractTaskCandidates: (message: string, index: number) => void) => {
-    if (!userMessage.trim()) return;
-    // reset streaming state
-    streamingRef.current = true;
-    receivedFirstDeltaRef.current = false;
-    setLoading(true);
-    setShowThinking(true);
-    
-    // Clear any existing thinking animation
-    if (thinkingIntervalRef.current) {
-      clearInterval(thinkingIntervalRef.current);
+  const updateSessionTitle = useCallback(async (message: string, activeSession: string) => {
+    try {
+      await apiSessionUpdateTitle(activeSession, message.slice(0, 50), "soumya");
+    } catch (error) {
+      console.error("Error updating session title:", error);
     }
-    
-    // Start thinking animation
-    thinkingDotsRef.current = "";
-    thinkingIntervalRef.current = setInterval(() => {
-      thinkingDotsRef.current = thinkingDotsRef.current.length >= 3 ? "" : thinkingDotsRef.current + ".";
-      setShowThinking(true);
-    }, 500);
+  }, []);
 
+  const sendMessage = async (
+    userMessage: string,
+    activeSession: string,
+    extractTaskCandidates: (message: string, index: number) => void,
+    smoothScrollToBottom: (duration?: number) => void,
+    listRef: React.RefObject<HTMLDivElement>
+  ) => {
+    if (!userMessage.trim()) return;
+
+    // Prevent multiple simultaneous calls
+    if (loading) {
+      console.warn("DEBUG: useChat sendMessage called while already loading, ignoring");
+      return;
+    }
+
+    console.log("DEBUG: useChat sendMessage called with:", userMessage.substring(0, 50) + "...");
+    console.log("DEBUG: Current loading state:", loading);
+    console.log("DEBUG: Current messages count:", messages.length);
+
+    // reset streaming state
+    receivedFirstDeltaRef.current = false;
+
+    // Create user message object
     const userMessageObj: ChatMessage = {
       role: "user",
       content: userMessage,
@@ -99,176 +91,292 @@ export function useChat() {
       formatted: true
     };
 
-    // Clear input immediately and start sliding animation
+    // Clear input and add user message only
     setInput("");
-    setSlidingMessage(userMessageObj);
-
-    // Start sliding animation immediately
-    setIsSliding(true);
-
-    // After animation completes, add to messages and reset
-    setTimeout(() => {
-      setMessages((prev: ChatMessage[]) => [...prev, userMessageObj]);
-      setSlidingMessage(null);
-      setIsSliding(false);
-      
-      // Scroll to bottom after DOM updates
-      requestAnimationFrame(() => {
-        // This would need to be handled by the parent component
+    flushSync(() => {
+      setMessages(prev => {
+        console.log("DEBUG: Adding user message, current messages count:", prev.length);
+        console.log("DEBUG: Current messages:", prev.map(m => ({ role: m.role, content: m.content.substring(0, 20) + "..." })));
+        return [...prev, userMessageObj];
       });
-    }, 500); // Match animation duration
+    });
+    smoothScrollToBottom(600);
 
-    // Extract task candidates in parallel and attach to this user message
-    (async () => {
-      try {
-        const data = await apiTasksExtract(userMessage);
-        const cands = (data.candidates || []).map((c: { title: string; due_ts?: number; confidence?: number }) => ({
-          title: c.title,
-          due_ts: c.due_ts,
-          confidence: c.confidence
-        }));
-        if (cands.length) {
-          extractTaskCandidates(userMessage, messages.length);
-        }
-      } catch {}
-    })();
-    
-    // Update session title if this is the first message
+    // Extract task candidates for the user message
+    try {
+      await extractTaskCandidates(userMessage, messages.length - 1); // Use user message index
+    } catch (error) {
+      console.error("Error extracting task candidates:", error);
+    }
+
+    // Update session title for first message
     if (messages.length === 0) {
-      console.log("Updating session title for session:", activeSession, "with message:", userMessage);
+      updateSessionTitle(userMessage, activeSession);
+    }
+
+    // Upload files first if any
+    if (pendingFiles.length > 0) {
       try {
-        await apiSessionUpdateTitle(activeSession, userMessage.slice(0, 50));
-        console.log("Session title updated successfully");
+        const formData = new FormData();
+        pendingFiles.forEach(file => formData.append('files', file));
+        formData.append('session_id', activeSession);
+
+        const uploadResponse = await fetch(`${getBackendUrl()}/api/upload`, {
+          method: 'POST',
+          headers: {
+            'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
+          },
+          body: formData
+        });
+
+        if (uploadResponse.ok) {
+          // Show files as a separate message
+          const filesMessage: ChatMessage = {
+            role: "user",
+            content: `📎 Attached ${pendingFiles.length} file(s): ${pendingFiles.map(f => f.name).join(', ')}`,
+            sources: [],
+            formatted: true
+          };
+          setMessages(prev => [...prev, filesMessage]);
+        }
+
+        setPendingFiles([]);
       } catch (error) {
-        console.error("Failed to update session title:", error);
+        console.error("Error uploading files:", error);
       }
     }
 
-    // If user was near bottom, follow the placeholder
-    const wasNearBottom = true; // This would need to be calculated by parent
-    if (wasNearBottom) {
-      // Use a small delay to ensure the thinking indicator is rendered
-      setTimeout(() => {
-        // This would need to be handled by the parent component
-      }, 50);
+    // Small delay to let the sliding animation complete before starting streaming
+    setTimeout(() => {
+      setLoading(true);
+      streamingRef.current = true;
+    }, 200);
+    // Clear typewriter state
+    if (typewriterRef.current.timer) {
+      clearInterval(typewriterRef.current.timer);
+      typewriterRef.current.timer = null;
     }
-    // Show floating thinking indicator until first delta or final arrives
-    setShowThinking(true);
+    typewriterRef.current.buffer = "";
 
     try {
-      const formData = new FormData();
-      formData.append('message', userMessage);
-      formData.append('session_id', activeSession);
-      formData.append('user_id', 'soumya');
-      
-      if (pendingFiles.length > 0) {
-        pendingFiles.forEach(file => formData.append('files', file));
-        setPendingFiles([]); // Clear after adding to form
-      }
-
-      const response = await fetch(`${getBackendUrl()}/api/chat/stream`, {
-        method: 'POST',
-        headers: {
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
-        },
-        body: formData
-      });
+      console.log("DEBUG: About to call apiChatStream API");
+      const response = await apiChatStream({ user_id: "soumya", message: userMessage, session_id: activeSession });
+      console.log("DEBUG: apiChatStream API call completed");
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
       const reader = response.body?.getReader();
-      if (!reader) throw new Error('No reader available');
+      if (!reader) {
+        throw new Error("No response body");
+      }
+
+      // If user was near bottom, follow the placeholder
+      const el = listRef.current;
+      const wasNearBottom = !!el && (el.scrollHeight - el.scrollTop - el.clientHeight < 120);
+      if (wasNearBottom) requestAnimationFrame(() => smoothScrollToBottom(300));
 
       const decoder = new TextDecoder();
-      let buffer = '';
-      let accumulatedContent = '';
+      let buffer = "";
+      let accumulatedContent = ""; // used for fallback error and debugging
+      let finalBuffer = ""; // accumulate full final for safety
+      // SSE event assembly: accumulate data lines per event until blank separator
+      let currentEvent: string | null = null;
+      let eventDataLines: string[] = [];
+      let streamFinished = false;
 
-      // Add assistant message placeholder
-      setMessages(prev => [...prev, { role: 'assistant', content: '', sources: [], formatted: false }]);
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') {
-              streamingRef.current = false;
-              setLoading(false);
-              setShowThinking(false);
-              if (thinkingIntervalRef.current) {
-                clearInterval(thinkingIntervalRef.current);
-                thinkingIntervalRef.current = null;
+          for (const line of lines) {
+            // Blank line indicates end of the current SSE event
+            if (line.trim() === '') {
+              if (currentEvent && eventDataLines.length > 0) {
+                const payload = eventDataLines.join('\n');
+                if (currentEvent === 'final') {
+                  finalBuffer = payload;
+                  accumulatedContent = payload;
+                  // Handle final event - check if we need to create assistant message or update existing one
+                  setMessages(prev => {
+                    const lastMessage = prev[prev.length - 1];
+                    if (lastMessage && lastMessage.role === 'assistant') {
+                      // Update existing assistant message
+                      return prev.map((msg, idx) =>
+                        idx === prev.length - 1 ? { ...msg, content: payload, formatted: true } : msg
+                      );
+                    } else {
+                      // No assistant message exists, create one (cached response case)
+                      console.log("DEBUG: Creating new assistant message for final/cached response");
+                      return [...prev, { role: 'assistant' as const, content: payload, sources: [], formatted: true }];
+                    }
+                  });
+                  // Drain any pending typewriter buffer and stop it
+                  typewriterRef.current.buffer = "";
+                  if (typewriterRef.current.timer) {
+                    clearInterval(typewriterRef.current.timer);
+                    typewriterRef.current.timer = null;
+                  }
+                }
+                // Ignore start/ping/delta for now
               }
-              // Mark final message as formatted
-              setMessages(prev => prev.map((msg, idx) => 
-                idx === prev.length - 1 ? { ...msg, formatted: true } : msg
-              ));
-              return;
+              // Reset accumulator for next event
+              currentEvent = null;
+              eventDataLines = [];
+              continue;
             }
 
-            try {
-              const parsed = JSON.parse(data);
-              if (parsed.type === 'delta' && parsed.content) {
-                receivedFirstDeltaRef.current = true;
-                setShowThinking(false);
-                if (thinkingIntervalRef.current) {
-                  clearInterval(thinkingIntervalRef.current);
-                  thinkingIntervalRef.current = null;
-                }
-                
-                accumulatedContent += parsed.content;
-                typewriterRef.current.buffer += parsed.content;
-                ensureTypewriter();
-              } else if (parsed.type === 'final') {
-                streamingRef.current = false;
-                setLoading(false);
-                setShowThinking(false);
-                if (thinkingIntervalRef.current) {
-                  clearInterval(thinkingIntervalRef.current);
-                  thinkingIntervalRef.current = null;
-                }
-                
-                const finalContent = parsed.content || accumulatedContent;
-                setMessages(prev => prev.map((msg, idx) => 
-                  idx === prev.length - 1 ? { 
-                    ...msg, 
-                    content: finalContent, 
-                    sources: parsed.sources || [], 
-                    formatted: true 
-                  } : msg
-                ));
-                return;
+            if (line.startsWith('event: ')) {
+              currentEvent = line.slice(7).trim();
+              eventDataLines = [];
+              continue;
+            }
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              if (data === '[DONE]') {
+                // Stream complete
+                console.log("DEBUG: Stream completed with [DONE], marking last message as formatted");
+                setMessages(prev => prev.map((msg, idx) => {
+                  if (idx === prev.length - 1 && msg.role === 'assistant') {
+                    console.log("DEBUG: Marking assistant message as formatted");
+                    return { ...msg, formatted: true };
+                  }
+                  return msg;
+                }));
+                streamFinished = true;
+                break;
               }
-            } catch (e) {
-              console.warn('Failed to parse SSE data:', data);
+              // Collect data lines for the current event
+              eventDataLines.push(data);
+              // For delta events, stream chunks to typewriter immediately
+              if (currentEvent === 'delta' && data && !streamFinished) {
+                // On first delta, add assistant message and start typewriter
+                if (!receivedFirstDeltaRef.current) {
+                  console.log("DEBUG: First delta received, adding assistant message");
+                  receivedFirstDeltaRef.current = true;
+                  // Add assistant message when we receive first content
+                  setMessages(prev => {
+                    console.log("DEBUG: Adding assistant message, total messages will be:", prev.length + 1);
+                    console.log("DEBUG: Current messages before adding assistant:", prev.map(m => ({ role: m.role, content: m.content.substring(0, 20) + "..." })));
+                    return [...prev, { role: 'assistant' as const, content: '', sources: [], formatted: false }];
+                  });
+                }
+                typewriterRef.current.buffer += data;
+                startTypewriter();
+              }
+              continue;
             }
           }
+
+          if (streamFinished) break;
+        }
+
+        reader.releaseLock();
+      } catch (error) {
+        console.error("Error in streaming:", error);
+
+        // Check if we have any accumulated content to show
+        if (accumulatedContent.trim()) {
+          // If assistant message exists, replace it; otherwise add new assistant error message
+          if (receivedFirstDeltaRef.current) {
+            setMessages(prev => {
+              const lastMessage = prev[prev.length - 1];
+              if (lastMessage && lastMessage.role === 'assistant') {
+                return prev.map((msg, idx) =>
+                  idx === prev.length - 1 ? { ...msg, content: accumulatedContent + "\n\n[Response was cut off due to an error]", formatted: true } : msg
+                );
+              } else {
+                return [...prev, { role: 'assistant', content: accumulatedContent + "\n\n[Response was cut off due to an error]", formatted: true, sources: [] }];
+              }
+            });
+          } else {
+            setMessages(prev => [...prev, { role: 'assistant', content: accumulatedContent + "\n\n[Response was cut off due to an error]", formatted: true, sources: [] }]);
+          }
+        } else {
+          // Error text
+          const errText = 'Sorry, I encountered an error. Please try again.';
+          if (receivedFirstDeltaRef.current) {
+            setMessages(prev => {
+              const lastMessage = prev[prev.length - 1];
+              if (lastMessage && lastMessage.role === 'assistant') {
+                return prev.map((msg, idx) =>
+                  idx === prev.length - 1 ? { ...msg, content: errText, formatted: true } : msg
+                );
+              } else {
+                return [...prev, { role: 'assistant', content: errText, formatted: true, sources: [] }];
+              }
+            });
+          } else {
+            setMessages(prev => [...prev, { role: 'assistant', content: errText, formatted: true, sources: [] }]);
+          }
+        }
+      } finally {
+        setLoading(false);
+        streamingRef.current = false;
+
+        // Stop typewriter to prevent race conditions
+        if (typewriterRef.current.timer) {
+          clearInterval(typewriterRef.current.timer);
+          typewriterRef.current.timer = null;
+        }
+
+        // Clear any remaining buffer to prevent further updates
+        typewriterRef.current.buffer = "";
+
+        // Only handle final message if stream didn't complete normally
+        if (!streamFinished) {
+          console.log("DEBUG: Stream didn't complete normally, handling final message");
+          if (receivedFirstDeltaRef.current) {
+            // Update the existing assistant message with final content if available
+            console.log("DEBUG: Updating existing assistant message with final content");
+            setMessages(prev => prev.map((msg, idx) => {
+              if (idx !== prev.length - 1) return msg;
+              if (msg.role !== 'assistant') return msg;
+              if (msg.formatted) return msg;
+              const content = finalBuffer && finalBuffer.length ? finalBuffer : msg.content;
+              return { ...msg, content, formatted: true };
+            }));
+          } else if (finalBuffer && finalBuffer.trim().length) {
+            // No deltas received, add final message directly
+            console.log("DEBUG: No deltas received, adding final message directly");
+            setMessages(prev => [...prev, { role: 'assistant', content: finalBuffer, formatted: true, sources: [] }]);
+          } else {
+            console.log("DEBUG: No final content to add, receivedFirstDelta:", receivedFirstDeltaRef.current, "finalBuffer length:", finalBuffer?.length || 0);
+          }
+        } else {
+          console.log("DEBUG: Stream completed normally, skipping final message handling");
         }
       }
     } catch (error) {
-      console.error('Streaming error:', error);
-      streamingRef.current = false;
+      console.error("Error in chat stream:", error);
       setLoading(false);
-      setShowThinking(false);
-      if (thinkingIntervalRef.current) {
-        clearInterval(thinkingIntervalRef.current);
-        thinkingIntervalRef.current = null;
+      streamingRef.current = false;
+
+      const errText = 'Sorry, I encountered an error. Please try again.';
+      if (receivedFirstDeltaRef.current) {
+        // Update the existing assistant message with error
+        setMessages(prev => {
+          const lastMessage = prev[prev.length - 1];
+          if (lastMessage && lastMessage.role === 'assistant') {
+            return prev.map((msg, idx) =>
+              idx === prev.length - 1 ? { ...msg, content: errText, formatted: true } : msg
+            );
+          } else {
+            return [...prev, { role: 'assistant', content: errText, formatted: true, sources: [] }];
+          }
+        });
+      } else {
+        // No assistant message exists yet, add error message
+        setMessages(prev => [...prev, { role: 'assistant', content: errText, formatted: true, sources: [] }]);
       }
-      
-      const errText = `Error: ${error instanceof Error ? error.message : 'Unknown error'}`;
-      setMessages(prev => prev.map((msg, idx) => 
-        idx === prev.length - 1 ? { ...msg, content: errText, formatted: true } : msg
-      ));
     }
-  }, [messages.length, pendingFiles, ensureTypewriter, stopTypewriter]);
+  };
 
   return {
     messages,
@@ -277,14 +385,9 @@ export function useChat() {
     setInput,
     loading,
     setLoading,
-    slidingMessage,
-    setSlidingMessage,
-    isSliding,
-    setIsSliding,
     pendingFiles,
     setPendingFiles,
-    showThinking,
-    setShowThinking,
-    sendMessage
+    sendMessage,
+    updateSessionTitle
   };
 }

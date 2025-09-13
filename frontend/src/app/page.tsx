@@ -1,99 +1,57 @@
 "use client";
 import { useState, useRef, useEffect, useCallback } from "react";
-import { flushSync } from "react-dom";
 import Message from "@/components/Message";
 import Sound from "@/components/Sound";
 import { getBackendUrl } from "@/utils/config";
-import { apiChatStream } from "@/lib/api";
+import { apiSessionsList } from "@/lib/api";
+import { useTaskManagement } from "@/hooks/useTaskManagement";
+import { useChat } from "@/hooks/useChat";
 
 import HUD from "@/components/HUD";
 import TasksPanel from "@/components/TasksPanel";
 import ChatSidebar from "@/components/ChatSidebar";
-import { apiSessionUpdateTitle, apiSessionsList } from "@/lib/api";
 
 import { Plus, Mic, SendHorizonal } from "lucide-react";
 import FileIcon from "@/components/FileIcon";
-
-interface ChatMessage {
-  role: "user" | "assistant";
-  content: string;
-  sources?: { path: string; score: number }[];
-  formatted?: boolean;
-  attachments?: { name: string; type: string }[];
-}
-
-
-// Minimal session shape used to hydrate sidebar sessions
-interface ChatSession {
-  id: string;
-  title: string;
-  last_message: string;
-  created_at: string;
-  message_count: number;
-  is_active: boolean;
-}
-
-// Shape from backend; fields may be missing or loosely typed
-interface RawSession {
-  id: string | number;
-  title?: string;
-  last_message?: string;
-  created_at?: string;
-  message_count?: number | string;
-  is_active?: boolean | number | string;
-}
+import { ChatMessage, ChatSession, RawSession } from "@/types/chat";
 
 
 
 export default function Home() {
   const STORAGE_KEY = "eclipse_chat_messages";
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const streamingRef = useRef(false);
-  const typewriterRef = useRef<{ timer: ReturnType<typeof setInterval> | null; buffer: string }>({ timer: null, buffer: "" });
+  // Use the chat hook for all chat-related state and logic
+  const {
+    messages,
+    setMessages,
+    input,
+    setInput,
+    loading,
+    pendingFiles,
+    setPendingFiles,
+    sendMessage: sendChatMessage
+  } = useChat();
 
-  const stopTypewriter = () => {
-    try { if (typewriterRef.current.timer) { clearInterval(typewriterRef.current.timer); } } catch {}
-    typewriterRef.current.timer = null;
-  };
+  // Simplified input handlers
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInput(e.target.value);
+    const el = inputRef.current;
+    if (el) {
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+    }
+  }, []);
 
-  const ensureTypewriter = () => {
-    if (typewriterRef.current.timer) return;
-    // Markdown-aware typewriter effect for better formatting
-    typewriterRef.current.timer = setInterval(() => {
-      if (typewriterRef.current.buffer.length > 0) {
-        // Find the next markdown-friendly boundary
-        let chunk = "";
-        const nextNewline = typewriterRef.current.buffer.indexOf('\n');
-        const nextSpace = typewriterRef.current.buffer.indexOf(' ');
-        
-        // Prioritize newlines to preserve markdown structure
-        if (nextNewline !== -1) {
-          chunk = typewriterRef.current.buffer.slice(0, nextNewline + 1);
-          typewriterRef.current.buffer = typewriterRef.current.buffer.slice(nextNewline + 1);
-        } else if (nextSpace !== -1) {
-          chunk = typewriterRef.current.buffer.slice(0, nextSpace + 1);
-          typewriterRef.current.buffer = typewriterRef.current.buffer.slice(nextSpace + 1);
-        } else {
-          // No more boundaries, take the rest
-          chunk = typewriterRef.current.buffer;
-          typewriterRef.current.buffer = "";
-        }
-        
-        setMessages(prev => prev.map((msg, idx) => 
-          idx === prev.length - 1 ? { ...msg, content: (msg.content || "") + chunk } : msg
-        ));
-      } else if (!streamingRef.current) {
-        // Stream finished and buffer drained - now mark as formatted
-        setMessages(prev => prev.map((msg, idx) => 
-          idx === prev.length - 1 ? { ...msg, formatted: true } : msg
-        ));
-        stopTypewriter();
-      }
-    }, 15); // Much faster typewriter effect
-  };
+  const sendMessageRef = useRef<((message: string) => Promise<void>) | null>(null);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      e.stopPropagation(); // Prevent form submission
+      console.log("DEBUG: Enter key pressed, calling sendMessage");
+      sendMessageRef.current?.(input);
+    }
+  }, [input]);
   
   // Generate session ID in backend-compatible format
   const [sessionId] = useState<string>(() => {
@@ -115,23 +73,19 @@ export default function Home() {
     }
   });
   
+  // Refs
   const listRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
-  const [recording, setRecording] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
+  const scrollAnimRef = useRef<number | null>(null);
+  const transcribeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // State
+  const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [transcribingDots, setTranscribingDots] = useState("");
-  const transcribeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const scrollAnimRef = useRef<number | null>(null);
-  // Assistant thinking indicator before first delta
-  const thinkingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const thinkingDotsRef = useRef<string>("");
-  const receivedFirstDeltaRef = useRef<boolean>(false);
-  const [showThinking, setShowThinking] = useState(false);
-  // Removed sliding overlay; we use smooth scroll instead
 
   const [activeSession, setActiveSession] = useState<string>(sessionId);
   const [showTasks, setShowTasks] = useState(false);
@@ -144,20 +98,22 @@ export default function Home() {
   const [healthy, setHealthy] = useState<boolean | null>(null);
   const [refreshSidebar, setRefreshSidebar] = useState(0);
 
+  // Task management integration
+  const {
+    taskCandByIndex,
+    handleTaskAdd,
+    handleTaskDismiss,
+    extractTaskCandidates
+  } = useTaskManagement();
+
 
   // (Removed unused local updateSessionTitle helper — apiSessionUpdateTitle covers this.)
 
-  // Auto-refresh sessions every 30 seconds for multi-device sync
+  // Initialize component on mount
   useEffect(() => {
-    const interval = setInterval(() => {
-      if (chatSidebarOpen) {
-        // Refresh sessions list to get updates from other devices
-        // This will be handled in ChatSidebar component
-      }
-    }, 30000); // 30 seconds
-
-    return () => clearInterval(interval);
-  }, [chatSidebarOpen]);
+    setIsClient(true);
+    inputRef.current?.focus();
+  }, []);
 
   const createNewChatSession = useCallback(async () => {
     try {
@@ -244,15 +200,11 @@ export default function Home() {
      }
    }, [messages]);
 
-  // Set client flag on mount to prevent hydration mismatch
-  useEffect(() => {
-    setIsClient(true);
-  }, []);
-
-  // Load persisted conversation on mount & prefetch sessions (only on client)
+  // Load data and initialize on mount
   useEffect(() => {
     if (!isClient) return;
     
+    // Load persisted messages
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
@@ -261,6 +213,7 @@ export default function Home() {
       }
     } catch {}
     
+    // Load sessions
     (async () => {
       try {
         const data = await apiSessionsList("soumya");
@@ -275,30 +228,23 @@ export default function Home() {
         }));
         setPrefetchedSessions(sessions);
         
-        // Cache the sessions immediately
-        try {
           localStorage.setItem("eclipse_chat_sessions_cache", JSON.stringify({
-            sessions,
-            timestamp: Date.now()
+          sessions, timestamp: Date.now()
           }));
-        } catch (cacheError) {
-          console.error("Error caching sessions:", cacheError);
-        }
       } catch {}
     })();
+
+    // Focus input
+    inputRef.current?.focus();
   }, [isClient]);
 
-  // Persist on every change (only on client)
+  // Persist messages on change
   useEffect(() => {
     if (!isClient) return;
-    
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
     } catch {}
   }, [messages, isClient]);
-
-  // Focus input on mount
-  useEffect(() => { inputRef.current?.focus(); }, []);
   
   // Check health on mount
   useEffect(() => {
@@ -348,258 +294,43 @@ export default function Home() {
     return () => window.removeEventListener('keydown', onKey);
   }, [recording, showTasks, createNewChatSession]);
 
+  const [isSendingMessage, setIsSendingMessage] = useState(false);
+
   const sendMessage = async (userMessage: string) => {
     if (!userMessage.trim()) return;
-    // reset streaming state
-    receivedFirstDeltaRef.current = false;
-    
-    // Create user message object
-    const userMessageObj: ChatMessage = {
-      role: "user",
-      content: userMessage,
-      sources: [],
-      formatted: true
-    };
-    
-    // Clear input and append user + assistant placeholder synchronously, then scroll
-    setInput("");
-    const assistantPlaceholder: ChatMessage = { role: "assistant", content: "", sources: [], formatted: false };
-    flushSync(() => {
-      setMessages(prev => [...prev, userMessageObj, assistantPlaceholder]);
-    });
-    smoothScrollToBottom(600);
-    
-    // Update session title if this is the first message
-    if (messages.length === 0) {
-      console.log("Updating session title for session:", activeSession, "with message:", userMessage);
-      try { 
-        await apiSessionUpdateTitle(activeSession, userMessage, "soumya");
-        console.log("Session title updated successfully");
-        // Trigger sidebar refresh to show updated title
-        setRefreshSidebar(prev => prev + 1);
-      } catch (error) {
-        console.error("Error updating session title:", error);
-      }
+
+    // Prevent multiple simultaneous calls
+    if (isSendingMessage) {
+      console.warn("DEBUG: sendMessage already in progress, ignoring duplicate call");
+      return;
     }
-    
-    // Upload files first if any
-    if (pendingFiles.length > 0) {
-      try {
-        const formData = new FormData();
-        pendingFiles.forEach(file => formData.append('files', file));
-        formData.append('session_id', activeSession);
-        
-        const uploadResponse = await fetch(`${getBackendUrl()}/api/upload`, {
-          method: 'POST',
-          headers: {
-            'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
-          },
-          body: formData
-        });
-        
-        if (uploadResponse.ok) {
-          // Show files as a separate message
-          const filesMessage: ChatMessage = {
-            role: "user",
-            content: `📎 Attached ${pendingFiles.length} file(s): ${pendingFiles.map(f => f.name).join(', ')}`,
-            sources: [],
-            formatted: true
-          };
-          setMessages(prev => [...prev, filesMessage]);
-        }
-        
-        setPendingFiles([]);
-      } catch (error) {
-        console.error("Error uploading files:", error);
-      }
-    }
-    
-    // Small delay to let the sliding animation complete before starting streaming
-    setTimeout(() => {
-      setLoading(true);
-      streamingRef.current = true;
-    }, 200);
-    stopTypewriter();
-    typewriterRef.current.buffer = "";
-    
+
+    console.log("DEBUG: page.tsx sendMessage called with:", userMessage.substring(0, 50) + "...");
+    setIsSendingMessage(true);
+
     try {
-      const response = await apiChatStream({ user_id: "soumya", message: userMessage, session_id: activeSession });
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error("No response body");
-      }
-      
-      // If user was near bottom, follow the placeholder
-      const el = listRef.current;
-      const wasNearBottom = !!el && (el.scrollHeight - el.scrollTop - el.clientHeight < 120);
-      if (wasNearBottom) requestAnimationFrame(() => smoothScrollToBottom(300));
-      // Show floating thinking indicator until first delta or final arrives
-      setShowThinking(true);
-      try { if (thinkingIntervalRef.current) clearInterval(thinkingIntervalRef.current); } catch {}
-      thinkingDotsRef.current = "";
-      
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let accumulatedContent = ""; // used for fallback error and debugging
-      let finalBuffer = ""; // accumulate full final for safety
-      // SSE event assembly: accumulate data lines per event until blank separator
-      let currentEvent: string | null = null;
-      let eventDataLines: string[] = [];
-      let streamFinished = false;
-      
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          
-          for (const line of lines) {
-            // Blank line indicates end of the current SSE event
-            if (line.trim() === '') {
-              if (currentEvent && eventDataLines.length > 0) {
-                const payload = eventDataLines.join('\n');
-                if (currentEvent === 'final') {
-                  finalBuffer = payload;
-                  accumulatedContent = payload;
-                  // Stop thinking indicator and typewriter; replace with final markdown
-                  try { if (thinkingIntervalRef.current) clearInterval(thinkingIntervalRef.current); } catch {}
-                  setMessages(prev => prev.map((msg, idx) => 
-                    idx === prev.length - 1 ? { ...msg, content: payload, formatted: true } : msg
-                  ));
-                  // Drain any pending typewriter buffer and stop it
-                  typewriterRef.current.buffer = "";
-                  stopTypewriter();
-                }
-                // Ignore start/ping/delta for now
-              }
-              // Reset accumulator for next event
-              currentEvent = null;
-              eventDataLines = [];
-              continue;
-            }
+      // Call the hook's sendMessage function (handles task extraction and session title updates)
+      await sendChatMessage(
+        userMessage,
+        activeSession,
+        extractTaskCandidates,
+        smoothScrollToBottom,
+        listRef as React.RefObject<HTMLDivElement>
+      );
 
-            if (line.startsWith('event: ')) {
-              currentEvent = line.slice(7).trim();
-              eventDataLines = [];
-              continue;
-            }
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6);
-              if (data === '[DONE]') {
-                // Stream complete
-                setMessages(prev => prev.map((msg, idx) => 
-                  idx === prev.length - 1 ? { ...msg, formatted: true } : msg
-                ));
-                streamFinished = true;
-                break;
-              }
-              // Collect data lines for the current event
-              eventDataLines.push(data);
-              // For delta events, stream chunks to typewriter immediately
-              if (currentEvent === 'delta' && data) {
-                // On first delta, stop thinking indicator and clear placeholder
-                if (!receivedFirstDeltaRef.current) {
-                  receivedFirstDeltaRef.current = true;
-                  try { if (thinkingIntervalRef.current) clearInterval(thinkingIntervalRef.current); } catch {}
-                  setShowThinking(false);
-                  // Insert assistant message at first token
-                  setMessages(prev => [...prev, { role: 'assistant', content: '', sources: [], formatted: false }]);
-                }
-                typewriterRef.current.buffer += data;
-                ensureTypewriter();
-              }
-              continue;
-            }
-          }
-
-          if (streamFinished) break;
-        }
-        
-        reader.releaseLock();
-      } catch (error) {
-        console.error("Error in streaming:", error);
-        
-        // Check if we have any accumulated content to show
-        if (accumulatedContent.trim()) {
-          // If assistant started, replace last; else append new assistant error message
-          if (receivedFirstDeltaRef.current) {
-            setMessages(prev => prev.map((msg, idx) => 
-              idx === prev.length - 1 ? { ...msg, content: accumulatedContent + "\n\n[Response was cut off due to an error]", formatted: true } : msg
-            ));
-          } else {
-            setMessages(prev => [...prev, { role: 'assistant', content: accumulatedContent + "\n\n[Response was cut off due to an error]", formatted: true, sources: [] }]);
-          }
-        } else {
-          // Error text
-          const errText = 'Sorry, I encountered an error. Please try again.';
-          if (receivedFirstDeltaRef.current) {
-            setMessages(prev => prev.map((msg, idx) => 
-              idx === prev.length - 1 ? { ...msg, content: errText, formatted: true } : msg
-            ));
-          } else {
-            setMessages(prev => [...prev, { role: 'assistant', content: errText, formatted: true, sources: [] }]);
-          }
-        }
-      } finally {
-        setLoading(false);
-        streamingRef.current = false;
-        try { if (thinkingIntervalRef.current) clearInterval(thinkingIntervalRef.current); } catch {}
-        setShowThinking(false);
-        // If buffer is empty, stop now; otherwise let typewriter finish draining
-        if (!typewriterRef.current.buffer.length) {
-          stopTypewriter();
-        }
-        // Ensure final message is marked formatted even if 'final' event was missed
-        if (receivedFirstDeltaRef.current) {
-          setMessages(prev => prev.map((msg, idx) => {
-            if (idx !== prev.length - 1) return msg;
-            if (msg.role !== 'assistant') return msg;
-            if (msg.formatted) return msg;
-            const content = finalBuffer && finalBuffer.length ? finalBuffer : msg.content;
-            return { ...msg, content, formatted: true };
-          }));
-        } else if (finalBuffer && finalBuffer.trim().length) {
-          setMessages(prev => [...prev, { role: 'assistant', content: finalBuffer, formatted: true, sources: [] }]);
-        }
+      // Trigger sidebar refresh after message is sent (for session title updates)
+      if (messages.length === 0) {
+          console.log("DEBUG: Triggering sidebar refresh for first message");
+          setRefreshSidebar(prev => prev + 1);
       }
-    } catch (error) {
-      console.error("Error in chat stream:", error);
-              setLoading(false);
-        streamingRef.current = false;
-        setShowThinking(false);
-      
-      const errText = 'Sorry, I encountered an error. Please try again.';
-      if (receivedFirstDeltaRef.current) {
-        setMessages(prev => prev.map((msg, idx) => 
-          idx === prev.length - 1 ? { ...msg, content: errText, formatted: true } : msg
-        ));
-      } else {
-        setMessages(prev => [...prev, { role: 'assistant', content: errText, formatted: true, sources: [] }]);
-      }
+    } finally {
+      setIsSendingMessage(false);
     }
   };
 
-  // Floating "Thinking" indicator overlay (not in a chat bubble)
-  const ThinkingOverlay = () => (
-    <div className="pointer-events-none fixed inset-x-0 bottom-28 flex justify-center z-50">
-      <div className="flex items-center gap-2 text-white/70">
-        <span className="text-sm">Thinking</span>
-        <span className="inline-flex gap-1 items-end">
-          <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce [animation-delay:-0.2s]"></span>
-          <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce"></span>
-          <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce [animation-delay:0.2s]"></span>
-        </span>
-      </div>
-    </div>
-  );
+  // Update the ref after sendMessage is defined
+  sendMessageRef.current = sendMessage;
+
 
   // Smooth scroll helper for message list
   function smoothScrollToBottom(duration = 500) {
@@ -751,14 +482,15 @@ export default function Home() {
               </div>
               
               <div className="flex items-center gap-2 sm:gap-4">
-                {/* Move Memories/Reindex to sidebar on mobile; keep in header on desktop */}
+                {/* Tasks button always visible, Memories/Reindex only on desktop */}
+                <button
+                  onClick={() => setShowTasks(!showTasks)}
+                  className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-2 sm:px-3 py-1 rounded-lg border border-white/20"
+                >
+                  <span>Tasks</span>
+                </button>
+                {/* Desktop only: Memories and Reindex */}
                 <div className="hidden sm:flex items-center gap-2">
-                  <button
-                    onClick={() => setShowTasks(!showTasks)}
-                    className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-2 sm:px-3 py-1 rounded-lg border border-white/20"
-                  >
-                    <span>Tasks</span>
-                  </button>
                   <button
                     onClick={() => window.location.href = '/memories'}
                     className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-2 sm:px-3 py-1 rounded-lg border border-white/20"
@@ -768,7 +500,7 @@ export default function Home() {
                   <button
                       onClick={async () => {
                         try {
-                          const r = await fetch(`${getBackendUrl()}/admin/reindex`, { 
+                          const r = await fetch(`${getBackendUrl()}/admin/reindex`, {
                             method: "POST",
                             headers: {
                               'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
@@ -813,16 +545,30 @@ export default function Home() {
 
         <main className="flex-1">
           <div ref={listRef} className="scrollbar-thin max-w-5xl mx-auto px-2 sm:px-3 lg:px-6 py-3 sm:py-5 space-y-3 sm:space-y-3.5 overflow-y-auto" style={{ maxHeight: "calc(100dvh - 140px)", scrollbarGutter: "stable both-edges" }}>
-            {messages.map((m, i) => (
-              <Message key={i} role={m.role} content={m.content} sources={m.sources} attachments={m.attachments} />
-            ))}
+            {messages.map((m, i) => {
+              // Use a stable key based on role, content hash, and index
+              const contentHash = m.content.substring(0, 20).replace(/\s+/g, '-').toLowerCase();
+              const stableKey = `${m.role}-${contentHash}-${i}`;
+              return (
+                <Message
+                  key={stableKey}
+                  role={m.role}
+                  content={m.content}
+                  sources={m.sources}
+                  attachments={m.attachments}
+                  taskCandidates={taskCandByIndex[i] || []}
+                  onTaskAdd={(title: string) => handleTaskAdd(title)()}
+                  onTaskDismiss={handleTaskDismiss(i)}
+                />
+              );
+            })}
             {/* Removed in-message typing loader for minimal design */}
           </div>
         </main>
 
         {/* Floating input bar */}
         <div className="fixed bottom-2 sm:bottom-4 inset-x-0 px-2 sm:px-3 pointer-events-none">
-          <form onSubmit={(e) => { e.preventDefault(); sendMessage(input); }} className="max-w-5xl mx-auto pointer-events-auto">
+          <div className="max-w-5xl mx-auto pointer-events-auto">
             {/* File uploads display - above the input bar */}
             {pendingFiles.length > 0 && (
               <div className="mb-3 flex flex-wrap gap-2 justify-center">
@@ -844,7 +590,7 @@ export default function Home() {
             )}
             
             {/* Main input bar */}
-            <div className="relative rounded-2xl border border-white/20 bg-black/80 backdrop-blur-xl shadow-2xl flex items-center gap-3 px-3 py-2 sm:py-3">
+            <div className="relative rounded-2xl border border-white/20 bg-black/80 backdrop-blur-xl shadow-2xl flex items-center gap-3 px-3 py-1 sm:py-2 transition-all duration-200">
               {loading && <div className="loading-underline" />}
               
               {/* Upload button - larger on mobile */}
@@ -865,27 +611,17 @@ export default function Home() {
                   id="chat-input"
                   name="chat-input"
                   value={input}
-                  onChange={(e) => {
-                    setInput(e.target.value);
-                    // auto-resize
-                    const el = inputRef.current;
-                    if (el) {
-                      el.style.height = 'auto';
-                      const max = 160; // px max
-                      el.style.height = Math.min(el.scrollHeight, max) + 'px';
-                    }
-                  }}
-                  onKeyDown={(e) => {
-                    // Enter to send; Shift+Enter inserts newline
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      sendMessage(input);
-                    }
-                  }}
+                  onChange={handleInputChange}
+                  onKeyDown={handleKeyDown}
                   placeholder={loading ? "Waiting for reply..." : creatingSession ? "Creating new chat..." : "Hey soumya"}
                   ref={inputRef}
                   rows={1}
-                  className="w-full bg-transparent text-white px-2 py-1 sm:py-2 pr-2 outline-none placeholder:text-white/40 resize-none overflow-y-auto text-sm sm:text-base"
+                  className="w-full bg-transparent text-white px-2 py-0 outline-none placeholder:text-white/40 resize-none overflow-y-auto text-sm sm:text-base"
+                  style={{
+                    border: 'none',
+                    boxShadow: 'none',
+                    minHeight: '0px'
+                  }}
                 />
                 {transcribing && (
                   <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-white/60">
@@ -941,11 +677,10 @@ export default function Home() {
                 <SendHorizonal size={18} className="sm:w-[18px] sm:h-[18px]" />
               </button>
             </div>
-          </form>
+          </div>
         </div>
         <Sound play={messages[messages.length - 1]?.role === "assistant"} />
       </div>
-      {showThinking && <ThinkingOverlay />}
 
              {/* Existing Components */}
        <HUD />

@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { getBackendUrl } from "@/utils/config";
 
 export async function POST(
@@ -21,3 +20,4 @@ export async function POST(
     return Response.json({ error: "Failed to connect to backend" }, { status: 500 });
   }
 }
+

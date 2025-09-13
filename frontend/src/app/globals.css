@@ -88,10 +88,29 @@ body {
 .prose pre { background: #0a0a0a; color: white; padding: 12px; border-radius: 8px; overflow: auto; }
 
 /* Scrollbar styling */
-*::-webkit-scrollbar { width: 10px; }
-*::-webkit-scrollbar-track { background: rgba(255,255,255,0.03); }
-*::-webkit-scrollbar-thumb { background-color: rgba(255,255,255,0.15); border-radius: 10px; border: 2px solid rgba(0,0,0,0); background-clip: padding-box; }
-* { scrollbar-color: rgba(255,255,255,0.15) transparent; scrollbar-width: thin; }
+*::-webkit-scrollbar { width: 12px; }
+*::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); border-radius: 6px; }
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(255,255,255,0.4);
+  border-radius: 6px;
+  border: 2px solid rgba(0,0,0,0);
+  background-clip: padding-box;
+  transition: background-color 0.2s ease;
+}
+*::-webkit-scrollbar-thumb:hover { background-color: rgba(255,255,255,0.6); }
+* { scrollbar-color: rgba(255,255,255,0.4) rgba(255,255,255,0.05); scrollbar-width: auto; }
+
+/* Custom scrollbar classes */
+.scrollbar::-webkit-scrollbar { width: 12px; }
+.scrollbar::-webkit-scrollbar-track { background: rgba(255,255,255,0.1); border-radius: 6px; }
+.scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgba(255,255,255,0.6);
+  border-radius: 6px;
+  border: 2px solid rgba(0,0,0,0);
+  background-clip: padding-box;
+  transition: background-color 0.2s ease;
+}
+.scrollbar::-webkit-scrollbar-thumb:hover { background-color: rgba(255,255,255,0.8); }
 
 /* Ensure proper mobile viewport */
 @viewport {
