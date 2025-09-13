@@ -2,10 +2,10 @@ import { getBackendUrl } from "@/utils/config";
 
 export async function POST(
   request: Request,
-  { params }: { params: { sessionId: string } }
+  { params }: { params: Promise<{ sessionId: string }> }
 ) {
   const backendUrl = getBackendUrl();
-  const { sessionId } = params;
+  const { sessionId } = await params;
 
   try {
     const json = await request.json();

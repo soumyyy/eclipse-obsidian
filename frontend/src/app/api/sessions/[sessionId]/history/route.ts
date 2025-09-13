@@ -2,10 +2,10 @@ import { getBackendUrl } from "@/utils/config";
 
 export async function GET(
   request: Request,
-  { params }: { params: { sessionId: string } }
+  { params }: { params: Promise<{ sessionId: string }> }
 ) {
   const backendUrl = getBackendUrl();
-  const { sessionId } = params;
+  const { sessionId } = await params;
   const url = new URL(request.url);
   const userId = url.searchParams.get('user_id');
 
