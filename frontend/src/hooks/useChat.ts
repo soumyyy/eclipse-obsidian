@@ -354,6 +354,38 @@ export function useChat() {
                 streamFinished = true;
                 break;
               }
+
+              // Try to parse as JSON and handle final_md type
+              try {
+                const parsed = JSON.parse(data);
+                if (parsed.type === 'final_md' && parsed.content) {
+                  console.log("DEBUG: Received final_md content, length:", parsed.content.length);
+                  // Create assistant message if none exists
+                  if (!receivedFirstDeltaRef.current) {
+                    receivedFirstDeltaRef.current = true;
+                    hasProcessedEvents = true;
+                    setMessages(prev => [...prev, {
+                      role: 'assistant' as const,
+                      content: parsed.content,
+                      sources: [],
+                      formatted: true
+                    }]);
+                  } else {
+                    // Update existing assistant message
+                    setMessages(prev => prev.map((msg, idx) => {
+                      if (idx === prev.length - 1 && msg.role === 'assistant') {
+                        return { ...msg, content: parsed.content, formatted: true };
+                      }
+                      return msg;
+                    }));
+                  }
+                  streamFinished = true;
+                  break;
+                }
+              } catch {
+                // Not valid JSON, treat as regular data
+              }
+
               // Collect data lines for the current event
               eventDataLines.push(data);
 
