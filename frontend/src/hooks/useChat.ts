@@ -254,8 +254,11 @@ export function useChat() {
               }
               // Collect data lines for the current event
               eventDataLines.push(data);
-              // For delta events, stream chunks to typewriter immediately
-              if (currentEvent === 'delta' && data && !streamFinished) {
+              // Handle different event types
+              if (currentEvent === 'start' && data === 'ok') {
+                console.log("DEBUG: Stream started successfully");
+                // Stream initialization - no action needed
+              } else if (currentEvent === 'delta' && data && !streamFinished) {
                 // On first delta, add assistant message and start typewriter
                 if (!receivedFirstDeltaRef.current) {
                   console.log("DEBUG: First delta received, adding assistant message");
@@ -269,6 +272,18 @@ export function useChat() {
                 }
                 typewriterRef.current.buffer += data;
                 startTypewriter();
+              } else if (currentEvent === 'message' && data === '[DONE]') {
+                // Alternative [DONE] format from backend
+                console.log("DEBUG: Stream completed with message [DONE], marking last message as formatted");
+                setMessages(prev => prev.map((msg, idx) => {
+                  if (idx === prev.length - 1 && msg.role === 'assistant') {
+                    console.log("DEBUG: Marking assistant message as formatted");
+                    return { ...msg, formatted: true };
+                  }
+                  return msg;
+                }));
+                streamFinished = true;
+                break;
               }
               continue;
             }
