@@ -5,13 +5,26 @@ import { TaskCandidate } from "@/types/chat";
 export function useTaskManagement() {
   const [taskCandByIndex, setTaskCandByIndex] = useState<Record<number, TaskCandidate[]>>({});
 
-  const handleTaskAdd = useCallback((title: string) => {
+  const handleTaskAdd = useCallback((title: string, isAutoAdded: boolean = false) => {
     return async () => {
       try {
         await apiTaskCreate(title);
-        console.log("Task created:", title);
+        console.log(`${isAutoAdded ? 'Auto-' : ''}Task created:`, title);
+
+        // Return task creation info for LLM awareness
+        return {
+          title,
+          isAutoAdded,
+          success: true
+        };
       } catch (error) {
         console.error("Failed to create task:", error);
+        return {
+          title,
+          isAutoAdded,
+          success: false,
+          error: error
+        };
       }
     };
   }, []);
@@ -38,11 +51,34 @@ export function useTaskManagement() {
         const cands = data.candidates.map((c: { title: string; due_ts?: number; confidence?: number }) => ({
           title: c.title,
           due_ts: c.due_ts,
-          confidence: c.confidence
+          confidence: c.confidence || 0.5 // Default confidence if not provided
         }));
-        console.log("DEBUG: Found", cands.length, "task candidates");
-        if (cands.length) {
-          setTaskCandByIndex((prev: Record<number, TaskCandidate[]>) => ({ ...prev, [userIndex]: cands }));
+
+        // Auto-add high-confidence tasks (confidence >= 0.8)
+        const highConfidenceTasks = cands.filter((c: TaskCandidate) => (c.confidence || 0) >= 0.8);
+        const lowConfidenceTasks = cands.filter((c: TaskCandidate) => (c.confidence || 0) < 0.8);
+
+        // Auto-add high confidence tasks
+        for (const task of highConfidenceTasks) {
+          console.log("DEBUG: Auto-adding high-confidence task:", task.title, "confidence:", task.confidence);
+          try {
+            const result = await handleTaskAdd(task.title, true)();
+            if (result && result.success) {
+              console.log("DEBUG: Successfully auto-added task:", task.title);
+            }
+          } catch (error) {
+            console.error("DEBUG: Failed to auto-add task:", task.title, error);
+          }
+        }
+
+        console.log("DEBUG: Found", cands.length, "task candidates (", highConfidenceTasks.length, "auto-added,", lowConfidenceTasks.length, "manual )");
+
+        // Only show manual candidates for low-confidence tasks
+        if (lowConfidenceTasks.length > 0) {
+          setTaskCandByIndex((prev: Record<number, TaskCandidate[]>) => ({
+            ...prev,
+            [userIndex]: lowConfidenceTasks
+          }));
         }
       } else {
         console.log("DEBUG: No candidates found in response:", data);
@@ -52,7 +88,7 @@ export function useTaskManagement() {
       // Don't throw the error, just log it so the chat flow continues
       console.log("DEBUG: Continuing without task extraction due to error");
     }
-  }, []);
+  }, [handleTaskAdd]);
 
   return {
     taskCandByIndex,

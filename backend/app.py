@@ -1174,10 +1174,32 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
         context, all_hits, hits, file_context, _ = _build_context_bundle(
             payload.user_id, payload.message, payload.session_id
         )
+        # Check for recently created tasks to inform LLM
+        recent_tasks = []
+        try:
+            if payload.session_id:
+                redis_ops = RedisOps()
+                # Get recent task creation events from chat history
+                recent_history = redis_ops.get_chat_history(payload.user_id, payload.session_id, limit=10)
+                for msg in recent_history:
+                    if msg.get("role") == "system" and "task" in msg.get("content", "").lower():
+                        recent_tasks.append(msg.get("content", ""))
+        except Exception as e:
+            print(f"Error checking recent tasks: {e}")
+
+        # Prepare enhanced system prompt with task awareness
+        task_context = ""
+        if recent_tasks:
+            task_context = "\n\nRECENT TASKS CREATED IN THIS CONVERSATION:\n" + "\n".join(f"- {task}" for task in recent_tasks[-3:])  # Last 3 tasks
+
+        enhanced_system_prompt = STREAM_SYSTEM_PROMPT
+        if task_context:
+            enhanced_system_prompt += "\n\nNOTE: The user has recently created tasks in this conversation. Acknowledge any task creation and provide helpful responses related to task management when appropriate."
+
         # Prepare messages for LLM (streaming: markdown-only)
         messages = [
-            {"role": "system", "content": STREAM_SYSTEM_PROMPT},
-            {"role": "user", "content": f"Context:\n{context}\n\nUser message: {payload.message}"}
+            {"role": "system", "content": enhanced_system_prompt},
+            {"role": "user", "content": f"Context:\n{context}{task_context}\n\nUser message: {payload.message}"}
         ]
         # Add recent chat history
         if payload.session_id:

@@ -570,8 +570,20 @@ export default function Home() {
                     content={m.content}
                     sources={m.sources}
                     attachments={m.attachments}
-                    taskCandidates={taskCandByIndex[i] || []}
-                    onTaskAdd={(title: string) => handleTaskAdd(title)()}
+                    taskCandidates={m.role === 'user' ? (taskCandByIndex[i] || []) : []}
+                    onTaskAdd={async (title: string) => {
+                      const result = await handleTaskAdd(title)();
+                      if (result && result.success) {
+                        // Add task creation info to chat context for LLM awareness
+                        const taskMessage = {
+                          role: 'system' as const,
+                          content: `Task "${title}" has been ${result.isAutoAdded ? 'automatically ' : ''}added to your task list.`,
+                          sources: [],
+                          formatted: true
+                        };
+                        setMessages(prev => [...prev, taskMessage]);
+                      }
+                    }}
                     onTaskDismiss={handleTaskDismiss(i)}
                   />
                 );

@@ -5,7 +5,7 @@ import FileIcon from "@/components/FileIcon";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
 
 export interface MessageProps {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: string;
   sources?: { path: string; score: number }[];
   formatted?: boolean;
@@ -24,6 +24,8 @@ export default function Message({ role, content, attachments, sources, stickyTop
   console.log(`DEBUG: Message component rendering - role: ${role}, contentLength: ${content?.length || 0}, contentPreview: ${(content || "").substring(0, 50)}${(content || "").length > 50 ? "..." : ""}`);
 
   const isUser = role === "user";
+  const isSystem = role === "system";
+
   const normalized = React.useMemo(() => {
     if (isUser) return content;
     let txt = content || "";
@@ -66,6 +68,11 @@ export default function Message({ role, content, attachments, sources, stickyTop
         </div>
       </div>
     );
+  }
+
+  // Don't render system messages in the UI (they're just for LLM context)
+  if (isSystem) {
+    return null;
   }
 
   const rowClass = [
@@ -123,11 +130,37 @@ export default function Message({ role, content, attachments, sources, stickyTop
         {/* Task candidates section */}
         {taskCandidates && taskCandidates.length > 0 && onTaskAdd && onTaskDismiss && (
           <div className="mt-3 sm:mt-4 pt-2 sm:pt-3 border-t border-white/10">
-            <div className="text-xs text-white/50 mb-2">Detected Tasks:</div>
+            <div className="text-xs text-white/50 mb-2 flex items-center gap-2">
+              <span>Detected Tasks:</span>
+              <span className="text-green-400 text-xs bg-green-400/10 px-2 py-0.5 rounded-full">
+                High confidence tasks are auto-added
+              </span>
+            </div>
             <div className="space-y-2">
               {taskCandidates.map((task, index) => (
                 <div key={index} className="flex items-center justify-between text-xs bg-white/5 rounded-lg px-2 sm:px-3 py-2">
-                  <span className="text-white/70 flex-1 pr-2">{task.title}</span>
+                  <div className="flex-1 pr-2">
+                    <span className="text-white/70 block">{task.title}</span>
+                    {task.confidence && (
+                      <div className="flex items-center gap-1 mt-1">
+                        <div className="flex-1 bg-white/10 rounded-full h-1">
+                          <div
+                            className={`h-1 rounded-full transition-all ${
+                              task.confidence >= 0.8 ? 'bg-green-400' :
+                              task.confidence >= 0.6 ? 'bg-yellow-400' : 'bg-red-400'
+                            }`}
+                            style={{ width: `${Math.max(task.confidence * 100, 10)}%` }}
+                          />
+                        </div>
+                        <span className={`text-xs ${
+                          task.confidence >= 0.8 ? 'text-green-400' :
+                          task.confidence >= 0.6 ? 'text-yellow-400' : 'text-red-400'
+                        }`}>
+                          {(task.confidence * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    )}
+                  </div>
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => onTaskAdd(task.title)}
@@ -149,8 +182,8 @@ export default function Message({ role, content, attachments, sources, stickyTop
             </div>
           </div>
         )}
-        {/* Floating Copy button (assistant only) */}
-        {!isUser && (normalized && normalized.length > 0) && (
+        {/* Floating Copy button (assistant only, not system) */}
+        {!isUser && !isSystem && (normalized && normalized.length > 0) && (
           <button
             onClick={handleCopy}
             aria-label="Copy"

@@ -1,5 +1,5 @@
 export interface ChatMessage {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: string;
   sources?: { path: string; score: number }[];
   formatted?: boolean;
