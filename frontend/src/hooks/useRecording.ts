@@ -36,7 +36,7 @@ export function useRecording() {
           const form = new FormData();
           form.append('audio', blob, 'audio.webm');
           
-          const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'}/api/transcribe`, {
+          const response = await fetch(`/api/transcribe`, {
             method: 'POST',
             headers: {
               'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''

@@ -73,15 +73,11 @@ export function useSessionManagement() {
     // Clear current session context to prevent bleeding
     setMessages([]);
     setActiveSession(sessionId);
-    
-    // Load session history from Redis
+
+    // Load session history from Redis via frontend proxy
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'}/api/sessions/${sessionId}/history?user_id=soumya`, {
-        headers: {
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
-        }
-      });
-      
+      const response = await fetch(`/api/sessions/${sessionId}/history?user_id=soumya`);
+
       if (response.ok) {
         const data = await response.json();
         const historyMessages: ChatMessage[] = (data.messages || []).map((msg: { role: string; content: string; sources?: { path: string; score: number }[] }) => ({

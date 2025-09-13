@@ -1,12 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
-import { getBackendUrl } from "@/utils/config";
 
 export function useHealthCheck() {
   const [healthy, setHealthy] = useState<boolean | null>(null);
 
   const checkHealth = useCallback(async () => {
     try {
-      const response = await fetch(`${getBackendUrl()}/api/health`);
+      const response = await fetch(`/api/health`);
       const data = await response.json();
       setHealthy(data.status === "ok");
     } catch (error) {
