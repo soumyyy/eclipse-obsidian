@@ -214,25 +214,17 @@ export function useChat() {
           totalDataReceived += chunkSize;
           receivedAnyData = true;
 
-          console.log("DEBUG: Received stream chunk, size:", chunkSize, "bytes, total so far:", totalDataReceived);
-
           buffer += decoder.decode(value, { stream: true });
-          console.log("DEBUG: Buffer after decode:", JSON.stringify(buffer.substring(0, 200)) + (buffer.length > 200 ? "..." : ""));
 
           const lines = buffer.split('\n');
           buffer = lines.pop() || '';
 
-          console.log("DEBUG: Processing", lines.length, "lines from chunk");
-
           for (const line of lines) {
-            console.log("DEBUG: Processing line:", JSON.stringify(line));
-
             // Check if this is an SSE event or raw text
             if (line.startsWith('event:') || line.startsWith('data:')) {
               hasProcessedEvents = true; // We have SSE events
             } else if (line.includes('[DONE]')) {
               // Stream completion for raw text responses
-              console.log("DEBUG: Raw text stream completed with [DONE]");
               if (receivedFirstDeltaRef.current) {
                 setMessages(prev => prev.map((msg, idx) => {
                   if (idx === prev.length - 1 && msg.role === 'assistant') {
@@ -246,11 +238,9 @@ export function useChat() {
             } else if (line.trim() && !line.startsWith('event:') && !line.startsWith('data:')) {
               // This appears to be raw text content
               rawTextBuffer += line + '\n';
-              console.log("DEBUG: Accumulated raw text, buffer length:", rawTextBuffer.length);
 
               // If this is the first raw text content, create assistant message
               if (!receivedFirstDeltaRef.current) {
-                console.log("DEBUG: First raw text detected, creating assistant message");
                 receivedFirstDeltaRef.current = true;
                 hasProcessedEvents = true; // Mark that we've started processing
                 setMessages(prev => [...prev, {
@@ -274,32 +264,42 @@ export function useChat() {
 
             // Blank line indicates end of the current SSE event
             if (line.trim() === '') {
-              console.log("DEBUG: Found blank line, processing event. Current event:", currentEvent, "Data lines:", eventDataLines.length);
               if (currentEvent && eventDataLines.length > 0) {
                 const payload = eventDataLines.join('\n');
-                console.log("DEBUG: Event payload:", JSON.stringify(payload));
                 if (currentEvent === 'final') {
-                  finalBuffer = payload;
-                  accumulatedContent = payload;
-                  console.log("DEBUG: Processing final event, payload length:", payload.length, "payload preview:", payload.substring(0, 100) + (payload.length > 100 ? "..." : ""));
+                  console.log("DEBUG: Processing final event, raw payload:", payload);
+
+                  // Try to parse JSON payload from backend
+                  let finalContent = payload;
+                  try {
+                    const parsed = JSON.parse(payload);
+                    if (parsed.content) {
+                      finalContent = parsed.content;
+                      console.log("DEBUG: Extracted content from JSON payload, length:", finalContent.length);
+                    } else if (parsed.text) {
+                      finalContent = parsed.text;
+                      console.log("DEBUG: Extracted text from JSON payload, length:", finalContent.length);
+                    }
+                  } catch (e) {
+                    console.log("DEBUG: Payload is not JSON, treating as plain text");
+                  }
+
+                  finalBuffer = finalContent;
+                  accumulatedContent = finalContent;
 
                   // Handle final event - check if we need to create assistant message or update existing one
                   setMessages(prev => {
-                    console.log("DEBUG: Final event - current messages:", prev.map(m => ({ role: m.role, contentLength: m.content.length })));
                     const lastMessage = prev[prev.length - 1];
                     if (lastMessage && lastMessage.role === 'assistant') {
                       // Update existing assistant message
-                      console.log("DEBUG: Updating existing assistant message with final content");
                       const updated = prev.map((msg, idx) =>
-                        idx === prev.length - 1 ? { ...msg, content: payload, formatted: true } : msg
+                        idx === prev.length - 1 ? { ...msg, content: finalContent, formatted: true } : msg
                       );
-                      console.log("DEBUG: Messages after final update:", updated.map(m => ({ role: m.role, contentLength: m.content.length })));
                       return updated;
                     } else {
                       // No assistant message exists, create one (cached response case)
                       console.log("DEBUG: Creating new assistant message for final/cached response");
-                      const newMessages = [...prev, { role: 'assistant' as const, content: payload, sources: [], formatted: true }];
-                      console.log("DEBUG: Messages after creating assistant:", newMessages.map(m => ({ role: m.role, contentLength: m.content.length })));
+                      const newMessages = [...prev, { role: 'assistant' as const, content: finalContent, sources: [], formatted: true }];
                       return newMessages;
                     }
                   });
@@ -321,12 +321,10 @@ export function useChat() {
             if (line.startsWith('event: ')) {
               currentEvent = line.slice(7).trim();
               eventDataLines = [];
-              console.log("DEBUG: Parsed event type:", JSON.stringify(currentEvent));
               continue;
             }
             if (line.startsWith('data: ')) {
               const data = line.slice(6);
-              console.log("DEBUG: Parsed data:", JSON.stringify(data));
               if (data === '[DONE]') {
                 // Stream complete
                 console.log("DEBUG: Stream completed with [DONE], marking last message as formatted");
@@ -342,29 +340,22 @@ export function useChat() {
               }
               // Collect data lines for the current event
               eventDataLines.push(data);
-              console.log("DEBUG: Added data to eventDataLines, now has", eventDataLines.length, "lines");
 
               // Handle different event types
               if (currentEvent === 'start' && data === 'ok') {
                 console.log("DEBUG: Stream started successfully");
                 // Stream initialization - no action needed
               } else if (currentEvent === 'delta' && data && !streamFinished) {
-                console.log("DEBUG: Processing delta event with data length:", data.length, "data preview:", data.substring(0, 50) + (data.length > 50 ? "..." : ""));
                 // On first delta, add assistant message and start typewriter
                 if (!receivedFirstDeltaRef.current) {
-                  console.log("DEBUG: First delta received, adding assistant message");
                   receivedFirstDeltaRef.current = true;
                   // Add assistant message when we receive first content
                   setMessages(prev => {
-                    console.log("DEBUG: Adding assistant message, total messages will be:", prev.length + 1);
-                    console.log("DEBUG: Current messages before adding assistant:", prev.map(m => ({ role: m.role, content: m.content.substring(0, 20) + "..." })));
                     const newMessages = [...prev, { role: 'assistant' as const, content: '', sources: [], formatted: false }];
-                    console.log("DEBUG: Messages after adding assistant:", newMessages.map(m => ({ role: m.role, contentLength: m.content.length })));
                     return newMessages;
                   });
                 }
                 typewriterRef.current.buffer += data;
-                console.log("DEBUG: Added to typewriter buffer, new buffer length:", typewriterRef.current.buffer.length);
                 startTypewriter();
               } else if (currentEvent === 'message' && data === '[DONE]') {
                 // Alternative [DONE] format from backend
