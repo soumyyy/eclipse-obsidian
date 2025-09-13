@@ -187,7 +187,6 @@ export function useChat() {
       let streamFinished = false;
 
       try {
-        let receivedAnyData = false;
         let totalDataReceived = 0;
         let rawTextBuffer = ""; // For handling non-SSE responses
         let hasProcessedEvents = false;
@@ -224,7 +223,6 @@ export function useChat() {
           chunksProcessed++;
           const chunkSize = value.length;
           totalDataReceived += chunkSize;
-          receivedAnyData = true;
 
           console.log(`DEBUG: Processing chunk ${chunksProcessed}, size: ${chunkSize} bytes`);
 
@@ -298,7 +296,7 @@ export function useChat() {
                       finalContent = parsed.text;
                       console.log("DEBUG: Extracted text from JSON payload, length:", finalContent.length);
                     }
-                  } catch (e) {
+                  } catch {
                     console.log("DEBUG: Payload is not JSON, treating as plain text");
                   }
 
