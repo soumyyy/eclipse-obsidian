@@ -191,18 +191,29 @@ export function useChat() {
         let totalDataReceived = 0;
         let rawTextBuffer = ""; // For handling non-SSE responses
         let hasProcessedEvents = false;
+        let chunksProcessed = 0;
+
+        console.log("DEBUG: Starting stream processing...");
 
         while (true) {
           const { done, value } = await reader.read();
           if (done) {
-            console.log("DEBUG: Stream reader done, total data received:", totalDataReceived, "bytes");
+            console.log("DEBUG: Stream reader done, total data received:", totalDataReceived, "bytes, chunks processed:", chunksProcessed, "hasProcessedEvents:", hasProcessedEvents);
 
             // If we didn't process any SSE events but have raw text, create assistant message
             if (!hasProcessedEvents && rawTextBuffer.trim()) {
-              console.log("DEBUG: No SSE events processed, creating assistant message from raw text");
+              console.log("DEBUG: No SSE events processed, creating assistant message from raw text, content length:", rawTextBuffer.trim().length);
               setMessages(prev => [...prev, {
                 role: 'assistant' as const,
                 content: rawTextBuffer.trim(),
+                sources: [],
+                formatted: true
+              }]);
+            } else if (!hasProcessedEvents) {
+              console.log("DEBUG: No data received from backend, creating error message");
+              setMessages(prev => [...prev, {
+                role: 'assistant' as const,
+                content: "I apologize, but I'm unable to generate a response at the moment. Please try again.",
                 sources: [],
                 formatted: true
               }]);
@@ -210,14 +221,21 @@ export function useChat() {
             break;
           }
 
+          chunksProcessed++;
           const chunkSize = value.length;
           totalDataReceived += chunkSize;
           receivedAnyData = true;
 
+          console.log(`DEBUG: Processing chunk ${chunksProcessed}, size: ${chunkSize} bytes`);
+
           buffer += decoder.decode(value, { stream: true });
+
+          console.log(`DEBUG: Buffer after chunk ${chunksProcessed}:`, buffer.length > 0 ? `"${buffer.substring(0, 100)}${buffer.length > 100 ? '...' : ''}"` : 'empty');
 
           const lines = buffer.split('\n');
           buffer = lines.pop() || '';
+
+          console.log(`DEBUG: Lines in chunk ${chunksProcessed}:`, lines.length);
 
           for (const line of lines) {
             // Check if this is an SSE event or raw text
@@ -380,6 +398,15 @@ export function useChat() {
         reader.releaseLock();
       } catch (error) {
         console.error("Error in streaming:", error);
+        console.log("DEBUG: Stream error occurred, creating error message");
+
+        // Create error message on stream failure
+        setMessages(prev => [...prev, {
+          role: 'assistant' as const,
+          content: "I apologize, but I'm unable to generate a response at the moment. Please try again.",
+          sources: [],
+          formatted: true
+        }]);
 
         // Check if we have any accumulated content to show
         if (accumulatedContent.trim()) {
