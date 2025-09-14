@@ -119,7 +119,9 @@ export function useChat() {
 
     // Update session title for first message
     // Check if this is the first user message in the session (no previous user messages)
-    const hasPreviousUserMessages = messages.some(msg => msg.role === 'user');
+    // Note: messages array now includes the user message we just added, so check all but the last message
+    const previousMessages = messages.slice(0, -1); // Exclude the user message we just added
+    const hasPreviousUserMessages = previousMessages.some(msg => msg.role === 'user');
     if (!hasPreviousUserMessages) {
       updateSessionTitle(userMessage, activeSession, () => {
         // Add small delay to ensure backend has processed the title update
@@ -273,16 +275,26 @@ export function useChat() {
               if (!receivedFirstDeltaRef.current) {
                 receivedFirstDeltaRef.current = true;
                 hasProcessedEvents = true; // Mark that we've started processing
-                setMessages(prev => [...prev, {
-                  role: 'assistant' as const,
-                  content: '',
-                  sources: [],
-                  formatted: false
-                }]);
-              }
-
-              // Update assistant message with accumulated content
-              if (receivedFirstDeltaRef.current) {
+                setMessages(prev => {
+                  const lastMsg = prev[prev.length - 1];
+                  // Only create new assistant message if the last message isn't already an assistant
+                  if (lastMsg && lastMsg.role === 'assistant') {
+                    // Update existing assistant message
+                    return prev.map((msg, idx) =>
+                      idx === prev.length - 1 ? { ...msg, content: rawTextBuffer.trim() } : msg
+                    );
+                  } else {
+                    // Create new assistant message
+                    return [...prev, {
+                      role: 'assistant' as const,
+                      content: rawTextBuffer.trim(),
+                      sources: [],
+                      formatted: false
+                    }];
+                  }
+                });
+              } else {
+                // Update existing assistant message with accumulated content
                 setMessages(prev => prev.map((msg, idx) => {
                   if (idx === prev.length - 1 && msg.role === 'assistant') {
                     return { ...msg, content: rawTextBuffer.trim() };
@@ -317,20 +329,18 @@ export function useChat() {
                   finalBuffer = finalContent;
                   accumulatedContent = finalContent;
 
-                  // Handle final event - check if we need to create assistant message or update existing one
+                  // Handle final event - ensure assistant message exists and update content
                   setMessages(prev => {
                     const lastMessage = prev[prev.length - 1];
                     if (lastMessage && lastMessage.role === 'assistant') {
                       // Update existing assistant message
-                      const updated = prev.map((msg, idx) =>
+                      return prev.map((msg, idx) =>
                         idx === prev.length - 1 ? { ...msg, content: finalContent, formatted: true } : msg
                       );
-                      return updated;
                     } else {
                       // No assistant message exists, create one (cached response case)
                       console.log("DEBUG: Creating new assistant message for final/cached response");
-                      const newMessages = [...prev, { role: 'assistant' as const, content: finalContent, sources: [], formatted: true }];
-                      return newMessages;
+                      return [...prev, { role: 'assistant' as const, content: finalContent, sources: [], formatted: true }];
                     }
                   });
                   // Drain any pending typewriter buffer and stop it
@@ -374,25 +384,26 @@ export function useChat() {
                 const parsed = JSON.parse(data);
                 if (parsed.type === 'final_md' && parsed.content) {
                   console.log("DEBUG: Received final_md content, length:", parsed.content.length);
-                  // Create assistant message if none exists
-                  if (!receivedFirstDeltaRef.current) {
-                    receivedFirstDeltaRef.current = true;
-                    hasProcessedEvents = true;
-                    setMessages(prev => [...prev, {
-                      role: 'assistant' as const,
-                      content: parsed.content,
-                      sources: [],
-                      formatted: true
-                    }]);
-                  } else {
-                    // Update existing assistant message
-                    setMessages(prev => prev.map((msg, idx) => {
-                      if (idx === prev.length - 1 && msg.role === 'assistant') {
-                        return { ...msg, content: parsed.content, formatted: true };
-                      }
-                      return msg;
-                    }));
-                  }
+                  // Ensure assistant message exists and update content
+                  setMessages(prev => {
+                    const lastMsg = prev[prev.length - 1];
+                    if (lastMsg && lastMsg.role === 'assistant') {
+                      // Update existing assistant message
+                      return prev.map((msg, idx) =>
+                        idx === prev.length - 1 ? { ...msg, content: parsed.content, formatted: true } : msg
+                      );
+                    } else {
+                      // Create new assistant message
+                      return [...prev, {
+                        role: 'assistant' as const,
+                        content: parsed.content,
+                        sources: [],
+                        formatted: true
+                      }];
+                    }
+                  });
+                  receivedFirstDeltaRef.current = true;
+                  hasProcessedEvents = true;
                   streamFinished = true;
                   break;
                 }
@@ -408,13 +419,19 @@ export function useChat() {
                 console.log("DEBUG: Stream started successfully");
                 // Stream initialization - no action needed
               } else if (currentEvent === 'delta' && data && !streamFinished) {
-                // On first delta, add assistant message and start typewriter
+                // On first delta, ensure assistant message exists
                 if (!receivedFirstDeltaRef.current) {
                   receivedFirstDeltaRef.current = true;
-                  // Add assistant message when we receive first content
+                  // Check if assistant message already exists, create if not
                   setMessages(prev => {
-                    const newMessages = [...prev, { role: 'assistant' as const, content: '', sources: [], formatted: false }];
-                    return newMessages;
+                    const lastMsg = prev[prev.length - 1];
+                    if (lastMsg && lastMsg.role === 'assistant') {
+                      // Assistant message already exists, just return current state
+                      return prev;
+                    } else {
+                      // Create new assistant message
+                      return [...prev, { role: 'assistant' as const, content: '', sources: [], formatted: false }];
+                    }
                   });
                 }
                 typewriterRef.current.buffer += data;

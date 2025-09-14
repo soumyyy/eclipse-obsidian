@@ -1058,11 +1058,10 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
     # Normalize and format output consistently
     prefer_table = bool(re.search(r"\b(table|tabulate|comparison|vs)\b", payload.message, flags=re.I))
     formatted_md = format_markdown_unified(reply, prefer_table=prefer_table, prefer_compact=False)
-    _append_history(payload.user_id, "user", payload.message, payload.session_id)
-    _append_history(payload.user_id, "assistant", formatted_md or reply, payload.session_id)
-    # Persist to Redis when session_id present so follow-ups get proper context
-    try:
-        if payload.session_id:
+
+    # Store messages in Redis if session_id is provided (single consistent storage)
+    if payload.session_id:
+        try:
             redis_ops = RedisOps()
             user_msg = {"role": "user", "content": payload.message, "timestamp": datetime.utcnow().isoformat() + "Z"}
             asst_msg = {"role": "assistant", "content": formatted_md or reply, "timestamp": datetime.utcnow().isoformat() + "Z"}
@@ -1087,8 +1086,8 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
                 }))
             except Exception:
                 pass
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     # Optional: store a quick memory
     if payload.make_note:
@@ -1252,7 +1251,6 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                 # Log memory usage after processing
                 final_memory = get_memory_usage()
                 print(f"Memory usage after query: {final_memory:.1f}MB")
-                _append_history(payload.user_id, "user", payload.message, payload.session_id)
                 try:
                     _auto_capture_intents(payload.user_id, payload.message)
                 except Exception:
@@ -1262,36 +1260,10 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                 prefer_table = bool(re.search(r"\b(table|tabulate|comparison|vs)\b", payload.message, flags=re.I))
                 formatted_md = format_markdown_unified(full, prefer_table=prefer_table, prefer_compact=False)
                 
-                # Store messages in Redis if session_id is provided
-                if payload.session_id:
-                    try:
-                        redis_ops = RedisOps()
-                        
-                        # Store user message
-                        user_message = {
-                            "role": "user",
-                            "content": payload.message,
-                            "timestamp": datetime.utcnow().isoformat() + "Z"
-                        }
-                        redis_ops.store_chat_message(payload.user_id, payload.session_id, user_message)
-                        
-                        _append_history(payload.user_id, "assistant", formatted_md or full, payload.session_id)
-                        
-                        # Store assistant message
-                        assistant_message = {
-                            "role": "assistant",
-                            "content": formatted_md or full,
-                            "timestamp": datetime.utcnow().isoformat() + "Z"
-                        }
-                        redis_ops.store_chat_message(payload.user_id, payload.session_id, assistant_message)
-                        
-                        # Cache the response for future similar queries
-                        _cache_response(payload.message, context_hash, formatted_md or full)
-                        # Prompt LRU for ultra-fast repeats
-                        _prompt_lru_set(payload.message.strip(), formatted_md or full)
-                        
-                    except Exception as e:
-                        print(f"Error storing messages in Redis: {e}")
+                # Cache the response for future similar queries (messages already stored above)
+                _cache_response(payload.message, context_hash, formatted_md or full)
+                # Prompt LRU for ultra-fast repeats
+                _prompt_lru_set(payload.message.strip(), formatted_md or full)
 
                 # Background memory extraction (streaming as well)
                 try:
@@ -1733,10 +1705,11 @@ def delete_session(session_id: str, user_id: str = "soumya"):
 
 @app.get("/api/sessions/{session_id}/history")
 def get_session_history(session_id: str, user_id: str = "soumya", limit: int = 50):
-    """Get chat history for a specific session"""
+    """Get chat history for a specific session (with Redis caching)"""
     try:
         redis_ops = RedisOps()
-        history = redis_ops.get_chat_history(user_id, session_id, limit)
+        # Use cached version for much faster responses (120s TTL)
+        history = redis_ops.get_chat_history_cached(user_id, session_id, limit)
         return {"ok": True, "messages": history}
     except Exception as e:
         raise HTTPException(500, f"Failed to get session history: {e}")

@@ -161,21 +161,22 @@ export default function Home() {
     }
   }, [isClient, setMessages, setPendingFiles]);
 
-  const handleSessionSelect = async (sessionId: string) => {
+  const handleSessionSelect = async (sessionId: string, prefetchedMessages?: ChatMessage[]) => {
     // Clear current session context to prevent bleeding
     setMessages([]);
     setPendingFiles([]);
-    
+
     setActiveSession(sessionId);
-    
-    // Load session history from Redis
+
+    // Use prefetched messages if available (instant loading)
+    if (prefetchedMessages && prefetchedMessages.length > 0) {
+      setMessages(prefetchedMessages);
+      return;
+    }
+
+    // Load session history from Redis (fallback for non-prefetched sessions)
     try {
-      const response = await fetch(`${getBackendUrl()}/api/sessions/${sessionId}/history?user_id=soumya`, {
-        headers: {
-          'X-API-Key': process.env.NEXT_PUBLIC_BACKEND_TOKEN || ''
-        }
-    });
-      
+      const response = await fetch(`/api/sessions/${sessionId}/history?user_id=soumya`);
       if (response.ok) {
         const data = await response.json();
         const historyMessages: ChatMessage[] = (data.messages || []).map((msg: { role: string; content: string; sources?: { path: string; score: number }[] }) => ({

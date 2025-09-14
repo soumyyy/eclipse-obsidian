@@ -69,12 +69,18 @@ export function useSessionManagement() {
     }
   }, [creatingSession]);
 
-  const handleSessionSelect = useCallback(async (sessionId: string, setMessages: (messages: ChatMessage[]) => void) => {
+  const handleSessionSelect = useCallback(async (sessionId: string, setMessages: (messages: ChatMessage[]) => void, prefetchedMessages?: ChatMessage[]) => {
     // Clear current session context to prevent bleeding
     setMessages([]);
     setActiveSession(sessionId);
 
-    // Load session history from Redis via frontend proxy
+    // Use prefetched messages if available (instant loading)
+    if (prefetchedMessages && prefetchedMessages.length > 0) {
+      setMessages(prefetchedMessages);
+      return;
+    }
+
+    // Load session history from Redis via frontend proxy (fallback)
     try {
       const response = await fetch(`/api/sessions/${sessionId}/history?user_id=soumya`);
 

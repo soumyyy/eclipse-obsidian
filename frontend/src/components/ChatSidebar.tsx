@@ -6,11 +6,11 @@ import {
   SquarePlus,
   Trash2,
   X,
-  ChevronRight,
   Sparkles
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { apiSessionsList, apiSessionCreate, apiSessionDelete } from "@/lib/api";
+import { ChatMessage } from "@/types/chat";
 
 interface ChatSession {
   id: string;
@@ -24,7 +24,7 @@ interface ChatSession {
 interface ChatSidebarProps {
   isOpen: boolean;
   onClose: () => void;
-  onSessionSelect: (sessionId: string) => void;
+  onSessionSelect: (sessionId: string, prefetchedMessages?: ChatMessage[]) => void;
   currentSessionId?: string;
   refreshTrigger?: number;
   initialSessions?: ChatSession[];
@@ -46,6 +46,10 @@ export default function ChatSidebar({
   // Removed unused debugMode state
   const [isClient, setIsClient] = useState(false);
   const isMobile = isClient ? window.innerWidth < 640 : false;
+
+  // Prefetched chat histories for instant loading
+  const [prefetchedHistories, setPrefetchedHistories] = useState<Map<string, ChatMessage[]>>(new Map());
+  const [prefetchingSessions, setPrefetchingSessions] = useState<Set<string>>(new Set());
 
   // Define fetchSessions before effects to avoid TDZ errors in dependencies
   const fetchSessions = useCallback(async (backgroundSync = false) => {
@@ -86,6 +90,54 @@ export default function ChatSidebar({
     }
   }, [isClient]);
 
+  // Prefetch recent session histories for instant loading
+  const prefetchSessionHistory = useCallback(async (sessionId: string) => {
+    // Skip if already prefetched or currently prefetching
+    if (prefetchedHistories.has(sessionId) || prefetchingSessions.has(sessionId)) {
+      return;
+    }
+
+    setPrefetchingSessions(prev => new Set(prev).add(sessionId));
+
+    try {
+      const response = await fetch(`/api/sessions/${sessionId}/history?user_id=soumya`);
+      if (response.ok) {
+        const data = await response.json();
+        const historyMessages: ChatMessage[] = (data.messages || []).map((msg: { role: string; content: string; sources?: { path: string; score: number }[] }) => ({
+          role: msg.role as "user" | "assistant",
+          content: msg.content,
+          sources: msg.sources || [],
+          formatted: true
+        }));
+
+        setPrefetchedHistories(prev => new Map(prev).set(sessionId, historyMessages));
+      }
+    } catch (error) {
+      console.error(`Failed to prefetch session ${sessionId}:`, error);
+    } finally {
+      setPrefetchingSessions(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(sessionId);
+        return newSet;
+      });
+    }
+  }, [prefetchedHistories, prefetchingSessions]);
+
+  // Background prefetching for recent sessions
+  const startBackgroundPrefetch = useCallback(() => {
+    if (!isOpen || sessions.length === 0) return;
+
+    // Prefetch the 3 most recent sessions (excluding current session)
+    const sessionsToPrefetch = sessions
+      .filter(session => session.id !== currentSessionId)
+      .slice(0, 3);
+
+    sessionsToPrefetch.forEach(session => {
+      // Small delay between prefetches to avoid overwhelming the server
+      setTimeout(() => prefetchSessionHistory(session.id), Math.random() * 1000);
+    });
+  }, [isOpen, sessions, currentSessionId, prefetchSessionHistory]);
+
   // Set client flag on mount to prevent hydration mismatch
   useEffect(() => {
     setIsClient(true);
@@ -99,6 +151,15 @@ export default function ChatSidebar({
       return () => clearInterval(interval);
     }
   }, [isOpen, fetchSessions]);
+
+  // Start background prefetching when sidebar opens and sessions are loaded
+  useEffect(() => {
+    if (isOpen && sessions.length > 0) {
+      // Small delay to ensure sessions are fully loaded
+      const prefetchTimer = setTimeout(startBackgroundPrefetch, 1000);
+      return () => clearTimeout(prefetchTimer);
+    }
+  }, [isOpen, sessions.length, startBackgroundPrefetch]);
 
   // Refresh sessions when refreshTrigger changes
   useEffect(() => {
@@ -403,16 +464,31 @@ export default function ChatSidebar({
                       : 'hover:bg-white/5 text-white/80 hover:text-white border border-transparent hover:border-white/10'
                   }`}
                   onClick={() => {
-                    onSessionSelect(session.id);
+                    // Use prefetched data if available for instant loading
+                    if (prefetchedHistories.has(session.id)) {
+                      const prefetchedMessages = prefetchedHistories.get(session.id);
+                      onSessionSelect(session.id, prefetchedMessages);
+                    } else {
+                      onSessionSelect(session.id);
+                    }
                     onClose();
                   }}
                 >
-                  <div className={`p-2 rounded-xl transition-colors ${
-                    currentSessionId === session.id 
-                      ? 'bg-white/20' 
+                  <div className={`p-2 rounded-xl transition-colors relative ${
+                    currentSessionId === session.id
+                      ? 'bg-white/20'
                       : 'bg-white/10 group-hover:bg-white/15'
                   }`}>
                     <MessageSquare className="h-4 w-4 text-white/60" />
+                    {/* Prefetch indicator */}
+                    {prefetchedHistories.has(session.id) && (
+                      <div className="absolute -top-1 -right-1 w-2 h-2 bg-green-400 rounded-full animate-pulse"
+                           title="Instant loading enabled" />
+                    )}
+                    {prefetchingSessions.has(session.id) && (
+                      <div className="absolute -top-1 -right-1 w-2 h-2 bg-blue-400 rounded-full animate-spin"
+                           title="Loading in background..." />
+                    )}
                   </div>
                   
                   <div className="flex-1 min-w-0">
