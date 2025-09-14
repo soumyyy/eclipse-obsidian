@@ -48,10 +48,10 @@ class MemoryManager:
             return self._last_sample["val"], self._last_sample["status"]
         except Exception as e:
             print(f"Memory check failed: {e}")
-            # Fallback to direct call if cache fails
-            mem = get_memory_usage()
-            status = check_memory_and_alert(mem)
-            return mem, status
+        # Fallback to direct call if cache fails
+        mem = get_memory_usage()
+        status = check_memory_and_alert(mem)
+        return mem, status
 
     def get_current_usage(self) -> float:
         """Get current memory usage (always fresh, no cache)."""
@@ -73,10 +73,7 @@ class MemoryManager:
 # Global memory manager instance
 memory_manager = MemoryManager()
 
-# Backward compatibility functions
-def get_cached_memory_status():
-    """Legacy function - use memory_manager.get_status() instead."""
-    return memory_manager.get_status()
+# Legacy memory function removed - use memory_manager.get_status() directly
 from services.task_management import smart_detect_task as _smart_detect_task
 from services.task_management import auto_capture_intents as _auto_capture_intents
 # --------------------------------------
@@ -100,7 +97,7 @@ from clients.redis_config import RedisOps, RedisKeys
 from clients.llm_cerebras import cerebras_chat   # Cerebras chat wrapper
 from clients.llm_cerebras import cerebras_chat_stream  # Cerebras streaming chat
 from clients.llm_cerebras import unified_chat_completion  # Unified sync/async function
-from clients.llm_cerebras import cerebras_chat_stream_async  # Async streaming (for compatibility)
+# Legacy LLM function removed - use unified_chat_completion() directly
 from cot_utils import should_apply_cot, build_cot_hint, inject_cot_hint
 from formatting import format_markdown_unified
 
@@ -436,7 +433,8 @@ class RetrieverManager:
 
 # Backward compatibility
 def get_retriever():
-    """Legacy sync function - use RetrieverManager.get_retriever_sync() instead."""
+    """Legacy function for backward compatibility with external files.
+    Internal app.py code should use RetrieverManager.get_retriever_sync() directly."""
     return RetrieverManager.get_retriever_sync()
 
 # ----------------- Ephemeral per-session uploads -----------------
@@ -450,7 +448,7 @@ def _ephemeral_add(session_id: str, texts_with_paths: List[Dict[str, str]]):
         return
     try:
         # Try to use RAG system if available
-        rag = get_retriever()
+        rag = RetrieverManager.get_retriever_sync()
         embed_fn = rag.embed_fn
         texts = [twp["text"] for twp in texts_with_paths]
         if not texts:
@@ -497,7 +495,7 @@ def _ephemeral_retrieve(session_id: Optional[str], query: str, top_k: int = 5):
         return []
     try:
         # Try to use RAG system if available
-        rag = get_retriever()
+        rag = RetrieverManager.get_retriever_sync()
         embed_fn = rag.embed_fn
         qv = embed_fn(query)
         store = EPHEMERAL_SESSIONS[session_id]
@@ -790,7 +788,7 @@ class ContextManager:
     async def _get_dense_hits_async(self, message: str, user_id: str):
         """Async wrapper for FAISS retrieval."""
         try:
-            retriever = get_retriever()
+            retriever = RetrieverManager.get_retriever_sync()
             _, hlist = retriever.build_context(message, user_id=user_id)
             return hlist
         except Exception as e:
@@ -838,8 +836,8 @@ context_manager = ContextManager()
 # ----------------- Shared chat context builder (legacy wrapper) -----------------
 def _build_context_bundle(user_id: str, message: str, session_id: Optional[str]) -> Tuple[str, List[Dict], List[Dict], str, Optional[str]]:
     """
-    Legacy wrapper for unified context manager.
-    Use context_manager.get_or_build() for better performance.
+    Legacy wrapper for backward compatibility.
+    Preferred: Use context_manager.get_or_build() for better performance with caching.
     """
     try:
         # Try to use the new async context manager
@@ -858,7 +856,7 @@ def _build_context_bundle(user_id: str, message: str, session_id: Optional[str])
 
     try:
         # Use unified retrieval with the new semantic memory function
-        retriever = get_retriever()
+        retriever = RetrieverManager.get_retriever_sync()
         _, dense_hits = retriever.build_context(message, user_id=user_id)
         dense_hits = dense_hits[:3]  # Limit results
 
@@ -1045,7 +1043,7 @@ def bootstrap():
                 ingest_from_dir("./vault")
 
         # Warm retriever (loads FAISS + docs)
-        _ = get_retriever()
+        _ = RetrieverManager.get_retriever_sync()
         print("Startup bootstrap complete.")
     except Exception as e:
         print(f"[startup] Non-fatal: {e}")
@@ -1082,7 +1080,7 @@ def health():
 @app.get("/memory")
 def memory_status():
     """Memory monitoring endpoint"""
-    current_memory, memory_status = get_cached_memory_status()
+    current_memory, memory_status = memory_manager.get_status()
     
     return {
         "status": memory_status["status"],
@@ -1180,7 +1178,7 @@ def health_full():
 
     # Memory snapshot
     try:
-        cur_mem, mem_status = get_cached_memory_status()
+        cur_mem, mem_status = memory_manager.get_status()
         details["memory"] = {
             "process_mb": round(cur_mem, 1),
             "status": mem_status.get("status"),
@@ -1212,7 +1210,7 @@ def admin_reindex(x_api_key: Optional[str] = Header(default=None)):
 
     # Refresh retriever using unified manager
     RetrieverManager.reset_retriever()
-    _ = get_retriever()
+    _ = RetrieverManager.get_retriever_sync()
 
     return {"status": "ok", "source": "github_zip", "note": "index rebuilt from repo"}
 
@@ -1238,7 +1236,7 @@ async def github_webhook(request: Request):
         shutil.rmtree(tmp, ignore_errors=True)
 
     RetrieverManager.reset_retriever()
-    _ = get_retriever()
+    _ = RetrieverManager.get_retriever_sync()
 
     return {"status": "ok", "mode": "zip_rebuild"}
 
@@ -1249,8 +1247,8 @@ async def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(req
         raise HTTPException(400, "message required")
 
     # Memory check for non-streaming endpoint too
-    current_memory, memory_status = get_cached_memory_status()
-    
+    current_memory, memory_status = memory_manager.get_status()
+
     if memory_manager.should_reject_request():
         memory_manager.force_garbage_collection()
         new_memory = memory_manager.get_current_usage()
@@ -1437,14 +1435,14 @@ async def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depe
         raise HTTPException(400, "message required")
 
     # Graceful degradation: check memory and reject if overloaded
-    current_memory, memory_status = get_cached_memory_status()
+    current_memory, memory_status = memory_manager.get_status()
     
     print(f"Memory status: {memory_status['status']} ({current_memory:.1f}MB)")
     
     if memory_manager.should_reject_request():
         # Force garbage collection attempt
         memory_manager.force_garbage_collection()
-
+        
         # Check again after cleanup
         new_memory = memory_manager.get_current_usage()
         if new_memory >= MEMORY_LIMIT_MB:
@@ -1540,7 +1538,7 @@ async def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depe
             yield "data: ok\n\n"
             # Increased caps for fuller streamed answers
             stream_max_tokens = 1024 if len(payload.message) < 120 else 2048
-            async for chunk in cerebras_chat_stream_async(messages, temperature=0.3, max_tokens=stream_max_tokens):
+            async for chunk in unified_chat_completion(messages, temperature=0.3, max_tokens=stream_max_tokens, stream=True):
                 if chunk:
                     buffer.append(chunk)
                     # Emit raw markdown in evented SSE (no JSON). Ensure multi-line chunks are split into proper SSE data lines.
@@ -1559,7 +1557,7 @@ async def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depe
             try:
                 full = "".join(buffer)
                 # Log memory usage after processing (use cached value to avoid extra psutil call)
-                final_memory, _ = get_cached_memory_status()
+                final_memory, _ = memory_manager.get_status()
                 print(f"Memory usage after query: {final_memory:.1f}MB")
                 try:
                     _auto_capture_intents(payload.user_id, payload.message)
@@ -1595,8 +1593,12 @@ async def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depe
                 except Exception as e:
                     print(f"Task creation skipped: {e}")
                 
-                # Emit final markdown via evented SSE with proper multi-line framing
-                for event in _sse_event("final", formatted_md or full):
+                # Emit final markdown via evented SSE in JSON format
+                final_payload = json.dumps({
+                    "type": "final_md",
+                    "content": formatted_md or full
+                })
+                for event in _sse_event("final", final_payload):
                     yield event
                 for event in _sse_event("message", "[DONE]"):
                     yield event
@@ -2044,7 +2046,17 @@ async def update_session_title(session_id: str, request: Request):
         redis_ops = RedisOps()
         data = redis_ops.get_session_data(session_id)
         if not data:
-            raise HTTPException(404, "session not found")
+            # Auto-create session if it doesn't exist (fallback for frontend session creation issues)
+            print(f"DEBUG: Session {session_id} not found, auto-creating it")
+            data = {
+                "id": session_id,
+                "title": "New Chat",
+                "last_message": "",
+                "created_at": datetime.utcnow().isoformat() + "Z",
+                "message_count": 0,
+                "is_active": True
+            }
+        redis_ops.set_session_data(session_id, data, expire=86400)
 
         data["title"] = title
         redis_ops.set_session_data(session_id, data, expire=86400)
@@ -2061,13 +2073,4 @@ async def update_session_title(session_id: str, request: Request):
         print(f"ERROR: Failed to update title: {e}")
         raise HTTPException(500, f"Failed to update title: {e}")
 
-# ----------------- Redis health check -----------------
-@app.get("/api/redis/health")
-def redis_health_check():
-    """Check Redis connection status"""
-    try:
-        redis_ops = RedisOps()
-        redis_ops.client.ping()
-        return {"ok": True, "redis": "connected", "status": "healthy"}
-    except Exception as e:
-        return {"ok": False, "redis": "disconnected", "error": str(e)}
+# Legacy redis_health_check function removed - Redis health is checked in health_full()

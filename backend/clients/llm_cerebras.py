@@ -161,14 +161,6 @@ async def _async_stream_call(messages, temperature, max_tokens):
         yield chunk
         await asyncio.sleep(0)
 
-# Keep backward compatibility - these now use the unified approach
-def cerebras_chat_async(messages: List[Dict], temperature: float = 0.3, max_tokens: int = 800) -> str:
-    """Legacy async wrapper - use unified_chat_completion instead."""
-    return unified_chat_completion(messages, temperature, max_tokens, stream=False)
-
-async def cerebras_chat_stream_async(messages: List[Dict], temperature: float = 0.3, max_tokens: int = 800):
-    """Legacy async stream wrapper - use unified_chat_completion instead."""
-    async for chunk in _async_stream_call(messages, temperature, max_tokens):
-        yield chunk
+# Legacy wrappers removed - use unified_chat_completion() directly
 
 
