@@ -53,9 +53,24 @@ export function useChat() {
     typewriterRef.current.timer = setInterval(updateTypewriter, 15);
   }, [updateTypewriter]);
 
-  const updateSessionTitle = useCallback(async (message: string, activeSession: string) => {
+  const updateSessionTitle = useCallback(async (message: string, activeSession: string, onTitleUpdated?: () => void) => {
     try {
-      await apiSessionUpdateTitle(activeSession, message.slice(0, 50), "soumya");
+      // Clean and prepare the title
+      const cleanMessage = message.trim();
+      const title = cleanMessage.slice(0, 50).trim();
+
+
+      // Don't update if title would be empty
+      if (!title) {
+        return;
+      }
+
+      const result = await apiSessionUpdateTitle(activeSession, title, "soumya");
+
+      // Trigger sidebar refresh if update was successful
+      if (result.ok) {
+        onTitleUpdated?.();
+      }
     } catch (error) {
       console.error("Error updating session title:", error);
     }
@@ -76,9 +91,6 @@ export function useChat() {
       return;
     }
 
-    console.log("DEBUG: useChat sendMessage called with:", userMessage.substring(0, 50) + "...");
-    console.log("DEBUG: Current loading state:", loading);
-    console.log("DEBUG: Current messages count:", messages.length);
 
     // reset streaming state
     receivedFirstDeltaRef.current = false;
@@ -94,11 +106,7 @@ export function useChat() {
     // Clear input and add user message only
     setInput("");
     flushSync(() => {
-      setMessages(prev => {
-        console.log("DEBUG: Adding user message, current messages count:", prev.length);
-        console.log("DEBUG: Current messages:", prev.map(m => ({ role: m.role, content: m.content.substring(0, 20) + "..." })));
-        return [...prev, userMessageObj];
-      });
+      setMessages(prev => [...prev, userMessageObj]);
     });
     smoothScrollToBottom(600);
 
@@ -110,8 +118,16 @@ export function useChat() {
     }
 
     // Update session title for first message
-    if (messages.length === 0) {
-      updateSessionTitle(userMessage, activeSession);
+    // Check if this is the first user message in the session (no previous user messages)
+    const hasPreviousUserMessages = messages.some(msg => msg.role === 'user');
+    if (!hasPreviousUserMessages) {
+      updateSessionTitle(userMessage, activeSession, () => {
+        // Add small delay to ensure backend has processed the title update
+        setTimeout(() => {
+          const event = new CustomEvent('refreshSidebar');
+          window.dispatchEvent(event);
+        }, 500);
+      });
     }
 
     // Upload files first if any
@@ -159,9 +175,7 @@ export function useChat() {
     typewriterRef.current.buffer = "";
 
     try {
-      console.log("DEBUG: About to call apiChatStream API");
       const response = await apiChatStream({ user_id: "soumya", message: userMessage, session_id: activeSession });
-      console.log("DEBUG: apiChatStream API call completed");
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -535,16 +549,6 @@ export function useChat() {
     }
   };
 
-  // Debug: Log messages whenever they change
-  React.useEffect(() => {
-    console.log("DEBUG: useChat messages updated:", messages.map((m, idx) => ({
-      index: idx,
-      role: m.role,
-      contentLength: m.content?.length || 0,
-      contentPreview: (m.content || "").substring(0, 30) + ((m.content || "").length > 30 ? "..." : ""),
-      formatted: m.formatted
-    })));
-  }, [messages]);
 
   return {
     messages,

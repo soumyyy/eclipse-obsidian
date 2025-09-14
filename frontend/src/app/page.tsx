@@ -48,7 +48,6 @@ export default function Home() {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       e.stopPropagation(); // Prevent form submission
-      console.log("DEBUG: Enter key pressed, calling sendMessage");
       sendMessageRef.current?.(input);
     }
   }, [input]);
@@ -149,6 +148,9 @@ export default function Home() {
         if (isClient) {
           localStorage.setItem('eclipse_session_id', newSessionId);
         }
+
+        // Trigger sidebar refresh to show new session
+        setRefreshSidebar(prev => prev + 1);
 
         inputRef.current?.focus();
       }
@@ -268,6 +270,16 @@ export default function Home() {
     }
   };
 
+  // Listen for sidebar refresh events
+  useEffect(() => {
+    const handleRefreshSidebar = () => {
+      setRefreshSidebar(prev => prev + 1);
+    };
+
+    window.addEventListener('refreshSidebar', handleRefreshSidebar);
+    return () => window.removeEventListener('refreshSidebar', handleRefreshSidebar);
+  }, []);
+
   const startRecording = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -356,11 +368,9 @@ export default function Home() {
 
     // Prevent multiple simultaneous calls
     if (isSendingMessage) {
-      console.warn("DEBUG: sendMessage already in progress, ignoring duplicate call");
       return;
     }
 
-    console.log("DEBUG: page.tsx sendMessage called with:", userMessage.substring(0, 50) + "...");
     setIsSendingMessage(true);
 
     try {
@@ -482,7 +492,7 @@ export default function Home() {
                 {/* Tasks button always visible, Memories/Reindex only on desktop */}
                 <button
                   onClick={() => setShowTasks(!showTasks)}
-                  className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-2 sm:px-3 py-0.5 rounded-lg border border-white/20 ml-6"
+                  className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-3 py-2 rounded-lg border border-white/20 ml-6"
                 >
                   <span>Tasks</span>
                 </button>
@@ -497,7 +507,7 @@ export default function Home() {
                 <div className="hidden sm:flex items-center gap-2">
                   <button
                     onClick={() => window.location.href = '/memories'}
-                    className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-2 sm:px-3 py-1 rounded-lg border border-white/20"
+                    className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-3 py-2 rounded-lg border border-white/20"
                   >
                     <span>Memories</span>
                   </button>
@@ -518,7 +528,7 @@ export default function Home() {
                           alert(`Reindex error: ${errorMessage}`);
                         }
                       }}
-                      className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-2 sm:px-3 py-1 rounded-lg border border-white/20"
+                      className="text-xs text-white/60 hover:text-white transition-colors hover:bg-white/10 px-3 py-2 rounded-lg border border-white/20"
                     >
                       <span>Reindex</span>
                     </button>
@@ -549,30 +559,18 @@ export default function Home() {
 
         <main className="flex-1">
           <div ref={listRef} className="scrollbar-thin max-w-5xl mx-auto px-2 sm:px-3 lg:px-6 py-3 sm:py-5 space-y-3 sm:space-y-3.5 overflow-y-auto" style={{ maxHeight: "calc(100dvh - 140px)", scrollbarGutter: "stable both-edges" }}>
-            {(() => {
-              console.log("DEBUG: Rendering messages in main page, total count:", messages.length);
-              console.log("DEBUG: Messages to render:", messages.map((m, idx) => ({
-                index: idx,
-                role: m.role,
-                contentLength: m.content?.length || 0,
-                contentPreview: (m.content || "").substring(0, 50) + ((m.content || "").length > 50 ? "..." : ""),
-                formatted: m.formatted
-              })));
+            {messages.map((m, i) => {
+              // Use a stable key based on role, content hash, and index
+              const contentHash = m.content.substring(0, 20).replace(/\s+/g, '-').toLowerCase();
+              const stableKey = `${m.role}-${contentHash}-${i}`;
 
-              return messages.map((m, i) => {
-                // Use a stable key based on role, content hash, and index
-                const contentHash = m.content.substring(0, 20).replace(/\s+/g, '-').toLowerCase();
-                const stableKey = `${m.role}-${contentHash}-${i}`;
-
-                console.log(`DEBUG: Rendering message ${i}: role=${m.role}, contentLength=${m.content.length}, key=${stableKey}`);
-
-                return (
-                  <Message
-                    key={stableKey}
-                    role={m.role}
-                    content={m.content}
-                    sources={m.sources}
-                    attachments={m.attachments}
+              return (
+                <Message
+                  key={stableKey}
+                  role={m.role}
+                  content={m.content}
+                  sources={m.sources}
+                  attachments={m.attachments}
                     taskCandidates={m.role === 'user' ? (taskCandByIndex[i] || []) : []}
                     onTaskAdd={async (title: string) => {
                       const result = await handleTaskAdd(title)();
@@ -590,8 +588,7 @@ export default function Home() {
                     onTaskDismiss={handleTaskDismiss(i)}
                   />
                 );
-              });
-            })()}
+              })}
             {/* Removed in-message typing loader for minimal design */}
           </div>
         </main>
@@ -724,7 +721,7 @@ export default function Home() {
               </div>
 
               {/* Desktop: Single row layout */}
-              <div className="hidden md:flex items-center gap-3 px-4 py-4">
+              <div className="hidden md:flex items-center gap-3 px-4 py-2">
                 {/* Upload button */}
                 <button
                   type="button"

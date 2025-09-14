@@ -1743,24 +1743,37 @@ def get_session_history(session_id: str, user_id: str = "soumya", limit: int = 5
 
 # ----------------- Update session title -----------------
 @app.post("/api/sessions/{session_id}/title")
-def update_session_title(session_id: str, user_id: str = "soumya", title: str = ""):
+async def update_session_title(session_id: str, request: Request):
     """Update session title (e.g., to the first user prompt)."""
     try:
-        if not title.strip():
+        # Get JSON data from request body
+        request_data = await request.json()
+        user_id = request_data.get("user_id", "soumya")
+        title = request_data.get("title", "").strip()
+
+        if not title:
             return {"ok": False, "error": "empty title"}
+
+        print(f"DEBUG: Updating session {session_id} title to: '{title}' for user {user_id}")
+
         redis_ops = RedisOps()
         data = redis_ops.get_session_data(session_id)
         if not data:
             raise HTTPException(404, "session not found")
-        data["title"] = title.strip()
+
+        data["title"] = title
         redis_ops.set_session_data(session_id, data, expire=86400)
+
         # ensure session is in user's set
         user_sessions_key = f"{RedisKeys.USER_SESSIONS}{user_id}"
         redis_ops.client.sadd(user_sessions_key, session_id)
+
+        print(f"DEBUG: Successfully updated session {session_id} title")
         return {"ok": True}
     except HTTPException:
         raise
     except Exception as e:
+        print(f"ERROR: Failed to update title: {e}")
         raise HTTPException(500, f"Failed to update title: {e}")
 
 # ----------------- Redis health check -----------------

@@ -66,7 +66,7 @@ export default function ChatSidebar({
         }
       }
       if (!backgroundSync) {
-        console.log(`Loaded ${freshSessions.length} sessions from Redis:`, freshSessions.map((s: ChatSession) => ({ id: s.id, title: s.title, last_message: s.last_message })));
+        console.log(`Loaded ${freshSessions.length} sessions from Redis`);
       }
     } catch (error) {
       console.error("Error fetching sessions:", error);
@@ -103,7 +103,6 @@ export default function ChatSidebar({
   // Refresh sessions when refreshTrigger changes
   useEffect(() => {
     if (refreshTrigger && refreshTrigger > 0) {
-      console.log("Refreshing sessions due to trigger:", refreshTrigger);
       fetchSessions();
     }
   }, [refreshTrigger, fetchSessions]);
@@ -471,12 +470,12 @@ export default function ChatSidebar({
                   </Button>
 
                   {/* Active Indicator */}
-                  {currentSessionId === session.id && (
+                  {/* {currentSessionId === session.id && (
                     <div className="flex items-center gap-1 text-white/80">
                       <div className="w-2 h-2 bg-white/80 rounded-full animate-pulse" />
                       <ChevronRight className="h-4 w-4" />
                     </div>
-                  )}
+                  )} */}
                 </div>
               ))}
             </div>

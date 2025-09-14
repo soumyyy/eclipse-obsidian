@@ -21,7 +21,6 @@ export interface MessageProps {
 
 
 export default function Message({ role, content, attachments, sources, stickyTopRight, outerRef, taskCandidates, onTaskAdd, onTaskDismiss }: MessageProps) {
-  console.log(`DEBUG: Message component rendering - role: ${role}, contentLength: ${content?.length || 0}, contentPreview: ${(content || "").substring(0, 50)}${(content || "").length > 50 ? "..." : ""}`);
 
   const isUser = role === "user";
   const isSystem = role === "system";
@@ -29,7 +28,6 @@ export default function Message({ role, content, attachments, sources, stickyTop
   const normalized = React.useMemo(() => {
     if (isUser) return content;
     let txt = content || "";
-    console.log(`DEBUG: Normalizing content for assistant message, original length: ${txt.length}`);
     // Live-stream normalizer to help ReactMarkdown spot code blocks while streaming
     try {
       // 1) If opening fence has language + code on same line, insert a newline after language
@@ -42,7 +40,6 @@ export default function Message({ role, content, attachments, sources, stickyTop
       const tickCount = (txt.match(/```/g) || []).length;
       if (tickCount % 2 === 1) txt = txt + "\n```\n";
     } catch {}
-    console.log(`DEBUG: Normalized content length: ${txt.length}`);
     return txt;
   }, [content, isUser]);
 
