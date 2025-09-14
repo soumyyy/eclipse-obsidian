@@ -112,4 +112,63 @@ def cerebras_chat_with_model(messages: List[Dict], model: Optional[str] = None, 
     )
     return resp.choices[0].message.content
 
+# ----------------- Unified Implementation -----------------
+
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
+# Global thread pool for LLM operations
+_llm_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="llm")
+
+def unified_chat_completion(messages: List[Dict], temperature: float = 0.3, max_tokens: int = 800, stream: bool = False):
+    """
+    Unified function that handles both sync and async contexts automatically.
+    Use this instead of separate sync/async functions.
+    """
+    # Detect if we're in an async context
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # We're in async context, return coroutine
+            if stream:
+                return _async_stream_call(messages, temperature, max_tokens)
+            else:
+                return _async_call(cerebras_chat, messages, temperature, max_tokens)
+        else:
+            # We're in sync context, call directly
+            if stream:
+                return cerebras_chat_stream(messages, temperature, max_tokens)
+            else:
+                return cerebras_chat(messages, temperature, max_tokens)
+    except RuntimeError:
+        # No event loop, definitely sync context
+        if stream:
+            return cerebras_chat_stream(messages, temperature, max_tokens)
+        else:
+            return cerebras_chat(messages, temperature, max_tokens)
+
+async def _async_call(func, *args, **kwargs):
+    """Helper for async calls."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_llm_executor, func, *args, **kwargs)
+
+async def _async_stream_call(messages, temperature, max_tokens):
+    """Helper for async streaming calls."""
+    loop = asyncio.get_event_loop()
+    sync_generator = await loop.run_in_executor(_llm_executor, cerebras_chat_stream, messages, temperature, max_tokens)
+
+    for chunk in sync_generator:
+        yield chunk
+        await asyncio.sleep(0)
+
+# Keep backward compatibility - these now use the unified approach
+def cerebras_chat_async(messages: List[Dict], temperature: float = 0.3, max_tokens: int = 800) -> str:
+    """Legacy async wrapper - use unified_chat_completion instead."""
+    return unified_chat_completion(messages, temperature, max_tokens, stream=False)
+
+async def cerebras_chat_stream_async(messages: List[Dict], temperature: float = 0.3, max_tokens: int = 800):
+    """Legacy async stream wrapper - use unified_chat_completion instead."""
+    async for chunk in _async_stream_call(messages, temperature, max_tokens):
+        yield chunk
+
 

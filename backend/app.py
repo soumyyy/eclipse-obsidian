@@ -12,6 +12,8 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 import psutil
 import gc
 from datetime import datetime
+import asyncio
+import time
 
 # Use shared services for memory guard and task detection
 from services.vpsmemoryguard import (
@@ -24,23 +26,57 @@ from services.vpsmemoryguard import (
     force_gc as force_garbage_collection,
 )
 
-# Lightweight cached memory sampler to avoid psutil on hot path
-_last_mem_sample = {"ts": 0.0, "val": 0.0, "status": {"status": "ok", "system_memory": {}}}
-def get_cached_memory_status():
-    try:
-        now = time.time()
-        if now - _last_mem_sample["ts"] > 10:
+# ----------------- Unified Memory Manager -----------------
+class MemoryManager:
+    """Unified memory monitoring and management system."""
+
+    def __init__(self):
+        self._last_sample = {"ts": 0.0, "val": 0.0, "status": {"status": "ok", "system_memory": {}}}
+        self._cache_ttl = 30  # seconds
+
+    def get_status(self) -> Tuple[float, Dict]:
+        """Get cached memory status with automatic refresh."""
+        try:
+            now = time.time()
+            if now - self._last_sample["ts"] > self._cache_ttl:
+                mem = get_memory_usage()
+                status = check_memory_and_alert(mem)
+                self._last_sample["ts"] = now
+                self._last_sample["val"] = mem
+                self._last_sample["status"] = status
+                print(f"Memory check: {mem:.1f}MB ({status['status']})")
+            return self._last_sample["val"], self._last_sample["status"]
+        except Exception as e:
+            print(f"Memory check failed: {e}")
+            # Fallback to direct call if cache fails
             mem = get_memory_usage()
             status = check_memory_and_alert(mem)
-            _last_mem_sample["ts"] = now
-            _last_mem_sample["val"] = mem
-            _last_mem_sample["status"] = status
-        return _last_mem_sample["val"], _last_mem_sample["status"]
-    except Exception:
-        # Fallback to direct call if cache fails
-        mem = get_memory_usage()
-        status = check_memory_and_alert(mem)
-        return mem, status
+            return mem, status
+
+    def get_current_usage(self) -> float:
+        """Get current memory usage (always fresh, no cache)."""
+        return get_memory_usage()
+
+    def force_garbage_collection(self):
+        """Force garbage collection."""
+        force_garbage_collection()
+
+    def should_reject_request(self) -> bool:
+        """Check if server should reject new requests due to memory pressure."""
+        _, status = self.get_status()
+        return status.get("should_reject", False)
+
+    def get_system_memory(self):
+        """Get system memory information."""
+        return get_system_memory()
+
+# Global memory manager instance
+memory_manager = MemoryManager()
+
+# Backward compatibility functions
+def get_cached_memory_status():
+    """Legacy function - use memory_manager.get_status() instead."""
+    return memory_manager.get_status()
 from services.task_management import smart_detect_task as _smart_detect_task
 from services.task_management import auto_capture_intents as _auto_capture_intents
 # --------------------------------------
@@ -63,6 +99,8 @@ from memory_extractor import extract_and_store_memories, run_memory_maintenance
 from clients.redis_config import RedisOps, RedisKeys
 from clients.llm_cerebras import cerebras_chat   # Cerebras chat wrapper
 from clients.llm_cerebras import cerebras_chat_stream  # Cerebras streaming chat
+from clients.llm_cerebras import unified_chat_completion  # Unified sync/async function
+from clients.llm_cerebras import cerebras_chat_stream_async  # Async streaming (for compatibility)
 from cot_utils import should_apply_cot, build_cot_hint, inject_cot_hint
 from formatting import format_markdown_unified
 
@@ -343,29 +381,63 @@ def inject_cot_hint(messages: List[Dict], hint: str) -> List[Dict]:
     return [*messages[:idx], {"role": "system", "content": hint}, *messages[idx:]]
 
 # ----------------- Post-formatting helpers -----------------
-_sanitize_inline = None  # moved to formatting.py
-
-_render_markdown = None  # moved to formatting.py
-
-_fallback_sanitize = None  # moved to formatting.py
 
 _RX_TABLE = re.compile(r"\b(table|tabulate|comparison|vs)\b", flags=re.I)
 _RX_GREETING = re.compile(r"\s*(hi|hello|hey|yo|hola)[.!?]?\s*", flags=re.I)
 
-# ----------------- Retriever singleton -----------------
-_retriever: Optional[RAG] = None
+# ----------------- Unified Retriever Manager -----------------
+class RetrieverManager:
+    """Unified singleton for RAG retriever with proper lifecycle management."""
 
-_rag = None
+    _instance: Optional[RAG] = None
+    _lock = asyncio.Lock()
+
+    @classmethod
+    async def get_retriever(cls) -> RAG:
+        """Async singleton retriever with thread-safe initialization."""
+        if cls._instance is None:
+            async with cls._lock:
+                if cls._instance is None:  # Double-check
+                    cls._instance = await cls._initialize_retriever()
+        return cls._instance
+
+    @classmethod
+    def get_retriever_sync(cls) -> RAG:
+        """Sync version for backward compatibility."""
+        if cls._instance is None:
+            # For sync contexts, we'll initialize synchronously
+            # This is acceptable since retriever initialization is a one-time operation
+            retr, embed_fn = make_faiss_retriever(
+                index_path=str(Path(__file__).resolve().parent / "data" / "index.faiss"),
+                docs_path=str(Path(__file__).resolve().parent / "data" / "docs.pkl"),
+                model_name="sentence-transformers/all-MiniLM-L6-v2",
+            )
+            cls._instance = RAG(retriever=retr, embed_fn=embed_fn, top_k=5)
+        return cls._instance
+
+    @classmethod
+    async def _initialize_retriever(cls) -> RAG:
+        """Async retriever initialization."""
+        def _sync_init():
+            retr, embed_fn = make_faiss_retriever(
+                index_path=str(Path(__file__).resolve().parent / "data" / "index.faiss"),
+                docs_path=str(Path(__file__).resolve().parent / "data" / "docs.pkl"),
+                model_name="sentence-transformers/all-MiniLM-L6-v2",
+            )
+            return RAG(retriever=retr, embed_fn=embed_fn, top_k=5)
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _sync_init)
+
+    @classmethod
+    def reset_retriever(cls):
+        """Reset retriever instance (used after reindexing)."""
+        cls._instance = None
+
+# Backward compatibility
 def get_retriever():
-    global _rag
-    if _rag is None:
-        retr, embed_fn = make_faiss_retriever(
-            index_path=str(Path(__file__).resolve().parent / "data" / "index.faiss"),
-            docs_path=str(Path(__file__).resolve().parent / "data" / "docs.pkl"),
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
-        )
-        _rag = RAG(retriever=retr, embed_fn=embed_fn, top_k=5)
-    return _rag
+    """Legacy sync function - use RetrieverManager.get_retriever_sync() instead."""
+    return RetrieverManager.get_retriever_sync()
 
 # ----------------- Ephemeral per-session uploads -----------------
 # Do NOT persist to FAISS or memory. In-memory only per session.
@@ -486,8 +558,79 @@ def _ephemeral_recent(session_id: Optional[str], max_items: int = 3) -> List[Dic
 
 # ----------------- Semantic memory retrieval (on-the-fly) -----------------
 def _semantic_memory_retrieve(user_id: str, query: str, limit: int = 5):
-    # Disabled for latency: avoid per-request memory embeddings
-            return []
+    """
+    Retrieve semantically relevant memories from SQLite database.
+    Uses text-based search for now (can be upgraded to embeddings later).
+    """
+    if not query or not query.strip():
+        return []
+
+    try:
+        from memory import search_memories, list_mem_items
+        import re
+
+        results = []
+        query_lower = query.lower().strip()
+
+        # Search legacy memories table
+        legacy_memories = search_memories(user_id, query, limit=limit//2)
+        for mem in legacy_memories:
+            results.append({
+                "id": f"legacy_{mem['id']}",
+                "text": mem["content"],
+                "path": f"memory_{mem['type']}",
+                "score": 0.7,  # Default score for text matches
+                "rank": len(results) + 1
+            })
+
+        # Search structured memories table
+        try:
+            # Try to search structured memories
+            structured_memories = list_mem_items(user_id, limit=limit//2)
+
+            # Filter by content relevance
+            for mem in structured_memories:
+                body = (mem.get("body") or "").lower()
+                title = (mem.get("title") or "").lower()
+
+                # Simple relevance scoring based on keyword matches
+                query_words = set(query_lower.split())
+                body_words = set(body.split())
+                title_words = set(title.split())
+
+                # Calculate intersection scores
+                body_score = len(query_words & body_words) / max(len(query_words), 1)
+                title_score = len(query_words & title_words) / max(len(query_words), 1)
+
+                combined_score = max(body_score, title_score)
+
+                if combined_score > 0.1:  # Minimum threshold
+                    content = ""
+                    if mem.get("title"):
+                        content += f"Title: {mem['title']}\n"
+                    if mem.get("body"):
+                        content += f"Content: {mem['body'][:500]}"
+                    if not content:
+                        continue
+
+                    results.append({
+                        "id": f"structured_{mem['id']}",
+                        "text": content,
+                        "path": f"memory_{mem['kind']}",
+                        "score": combined_score,
+                        "rank": len(results) + 1
+                    })
+        except Exception as e:
+            # Gracefully handle structured memory search failures
+            print(f"Structured memory search failed: {e}")
+
+        # Sort by score and limit results
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results[:limit]
+
+    except Exception as e:
+        print(f"Semantic memory retrieval failed: {e}")
+        return []
 
 # ----------------- Query expansion + RRF across variants -----------------
 def _expand_queries(q: str) -> List[str]:
@@ -544,115 +687,246 @@ def _rrf_merge(hit_lists: List[List[Dict]], top_k: int = 5, k_rrf: float = 60.0)
     merged.sort(key=lambda x: x.get("score", 0.0), reverse=True)
     return merged[:top_k]
 
-# ----------------- Shared chat context builder -----------------
+# ----------------- Unified Context Manager -----------------
+class ContextManager:
+    """Unified context manager to eliminate redundant context building."""
+
+    def __init__(self):
+        self._cache = {}
+        self._lock = asyncio.Lock()
+
+    async def get_or_build(self, user_id: str, message: str, session_id: str):
+        """Get cached context or build new one with async operations."""
+        cache_key = f"{user_id}:{session_id}:{hash(message)}"
+
+        # Check cache first
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        # Build new context with async lock
+        async with self._lock:
+            # Double-check cache
+            if cache_key in self._cache:
+                return self._cache[cache_key]
+
+            # Build context
+            context_bundle = await self._build_context_async(user_id, message, session_id)
+
+            # Cache result (simple TTL-based eviction)
+            self._cache[cache_key] = context_bundle
+
+            # Evict old entries if cache gets too large
+            if len(self._cache) > 50:
+                oldest_key = next(iter(self._cache))
+                del self._cache[oldest_key]
+
+            return context_bundle
+
+    async def _build_context_async(self, user_id: str, message: str, session_id: Optional[str]):
+        """Async version of context building to prevent blocking."""
+
+        # Start parallel tasks
+        dense_task = asyncio.create_task(self._get_dense_hits_async(message, user_id))
+        mem_task = asyncio.create_task(self._get_memory_hits_async(user_id, message, session_id))
+        eph_task = asyncio.create_task(self._get_ephemeral_hits_async(session_id, message))
+
+        # Wait for all to complete
+        dense_hits, mem_hits, eph_hits = await asyncio.gather(dense_task, mem_task, eph_task)
+
+
+        # Build final context
+        context_parts = []
+        all_hits = []
+
+        # Add dense hits (FAISS retrieval)
+        if dense_hits:
+            context_parts.append("\n\n".join(f"[{i+1}] {h['text']}" for i, h in enumerate(dense_hits)))
+            all_hits.extend(dense_hits)
+
+        # Add memory hits
+        if mem_hits:
+            all_hits.extend(mem_hits)
+
+        # Add ephemeral hits
+        if eph_hits:
+            all_hits.extend(eph_hits)
+
+        # Final RRF merge
+        all_hits = _rrf_merge([dense_hits, mem_hits, eph_hits], top_k=5)
+
+        # Include uploaded file content
+        file_context = ""
+        if session_id and session_id in EPHEMERAL_SESSIONS:
+            try:
+                items = EPHEMERAL_SESSIONS[session_id].get("items") or []
+                if items:
+                    relevant_items = []
+                    query_lower = message.lower()
+                    for item in items[:3]:
+                        item_text = item.get('text', '').lower()
+                        if any(word in item_text for word in query_lower.split() if len(word) > 3):
+                            relevant_items.append(item)
+                    if relevant_items:
+                        blocks = []
+                        for item in relevant_items:
+                            path = item.get('path', 'upload')
+                            text = item.get('text', '')
+                            blocks.append(f"Content from {path}:\n{text}")
+                        file_context = "\n\n" + "\n\n".join(blocks)
+            except Exception:
+                pass
+
+        # Build final context
+        if all_hits:
+            context_parts.insert(0, "\n\n".join(f"[{i+1}] {h['text']}" for i, h in enumerate(all_hits)))
+        if file_context:
+            context_parts.append(file_context)
+
+        context = "\n\n".join(context_parts) if context_parts else ""
+        uploads_info = self._get_uploads_info(session_id)
+
+        return context, all_hits, dense_hits, file_context, uploads_info
+
+    async def _get_dense_hits_async(self, message: str, user_id: str):
+        """Async wrapper for FAISS retrieval."""
+        try:
+            retriever = get_retriever()
+            _, hlist = retriever.build_context(message, user_id=user_id)
+            return hlist
+        except Exception as e:
+            print(f"Dense retrieval failed: {e}")
+            return []
+
+    async def _get_memory_hits_async(self, user_id: str, message: str, session_id: Optional[str]):
+        """Async wrapper for memory retrieval."""
+        try:
+            # Use the new semantic memory function
+            if len(message.split()) >= 15:
+                return _semantic_memory_retrieve(user_id, message, limit=3)
+            return []
+        except Exception as e:
+            print(f"Memory retrieval failed: {e}")
+            return []
+
+    async def _get_ephemeral_hits_async(self, session_id: Optional[str], message: str):
+        """Async wrapper for ephemeral retrieval."""
+        try:
+            return _ephemeral_retrieve(session_id, message, top_k=5)
+        except Exception as e:
+            print(f"Ephemeral retrieval failed: {e}")
+            return []
+
+    def _get_uploads_info(self, session_id: Optional[str]) -> Optional[str]:
+        """Get uploads info synchronously (fast operation)."""
+        if session_id and session_id in EPHEMERAL_SESSIONS:
+            try:
+                items = EPHEMERAL_SESSIONS[session_id].get("items") or []
+                files = []
+                for it in items:
+                    p = it.get("path", "(upload)")
+                    fname = str(p).split("::", 1)[0]
+                    if fname not in files:
+                        files.append(fname)
+                return f"count={len(files)} files: {', '.join(files[:6])}"
+            except Exception:
+                return "present"
+        return None
+
+# Global context manager instance
+context_manager = ContextManager()
+
+# ----------------- Shared chat context builder (legacy wrapper) -----------------
 def _build_context_bundle(user_id: str, message: str, session_id: Optional[str]) -> Tuple[str, List[Dict], List[Dict], str, Optional[str]]:
     """
-    Build retrieval context used by both /chat and /chat/stream.
-    Returns (context, all_hits, dense_hits, file_context, uploads_info)
+    Legacy wrapper for unified context manager.
+    Use context_manager.get_or_build() for better performance.
     """
-    t_ctx_start = time.perf_counter()
-    retriever = get_retriever()
-    # Keep retrieval light for speed: single variant, small top_k
-    variants = [message]
-    dense_lists: List[List[Dict]] = []
-    t_dense_start = time.perf_counter()
-    for vq in variants[:1]:
-        _, hlist = retriever.build_context(vq, user_id=user_id)
-        dense_lists.append(hlist)
-    dense_hits = _rrf_merge(dense_lists, top_k=3)
-    t_dense_ms = round((time.perf_counter() - t_dense_start) * 1000, 1)
-
-    # Skip semantic memory pass for very short prompts
-    t_mem_start = time.perf_counter()
-    mem_sem_hits = _semantic_memory_retrieve(user_id, message, limit=3) if len(message.split()) >= 15 else []
-    t_mem_ms = round((time.perf_counter() - t_mem_start) * 1000, 1)
-    t_eph_start = time.perf_counter()
-    eph_hits = _ephemeral_retrieve(session_id, message, top_k=5)
-    t_eph_ms = round((time.perf_counter() - t_eph_start) * 1000, 1)
-    # Final RRF merge across sources, then build context
-    t_rrf_start = time.perf_counter()
-    all_hits = _rrf_merge([eph_hits, mem_sem_hits, dense_hits], top_k=5)
-    t_rrf_ms = round((time.perf_counter() - t_rrf_start) * 1000, 1)
-
-    # Include uploaded file content in context if available (relevant only)
-    file_context = ""
-    t_filectx_start = time.perf_counter()
-    if session_id and session_id in EPHEMERAL_SESSIONS:
-        try:
-            items = EPHEMERAL_SESSIONS[session_id].get("items") or []
-            if items:
-                relevant_items = []
-                query_lower = message.lower()
-                for item in items[:3]:
-                    item_text = item.get('text', '').lower()
-                    if any(word in item_text for word in query_lower.split() if len(word) > 3):
-                        relevant_items.append(item)
-                if relevant_items:
-                    blocks = []
-                    for item in relevant_items:
-                        path = item.get('path', 'upload')
-                        text = item.get('text', '')
-                        blocks.append(f"Content from {path}:\n{text}")
-                    file_context = "\n\n" + "\n\n".join(blocks)
-        except Exception:
+    try:
+        # Try to use the new async context manager
+        import asyncio
+        if asyncio.get_event_loop().is_running():
+            # We're in an async context, use the new manager
+            # For now, fall back to sync implementation to avoid complexity
             pass
-
-    # Build more natural context (boost most recent attachments when question follows an upload)
-    context_parts = []
-    if all_hits:
-        context_parts.append("\n\n".join(f"[{i+1}] {h['text']}" for i, h in enumerate(all_hits)))
-    if file_context:
-        context_parts.append(file_context)
-    try:
-        store = EPHEMERAL_SESSIONS.get(session_id or "") or {}
-        last_added = float(store.get("last_added_at", 0.0))
-        if last_added and (time.time() - last_added) < 120:
-            recent_items = _ephemeral_recent(session_id, max_items=3)
-            if recent_items:
-                recent_block = "\n\n".join(f"[upload/recent] {it.get('path')}:\n{it.get('text','')[:1200]}" for it in recent_items)
-                context_parts.insert(0, recent_block)
-    except Exception:
+    except RuntimeError:
+        # No event loop, use sync implementation
         pass
 
-    context = "\n\n".join(context_parts) if context_parts else ""
-    t_filectx_ms = round((time.perf_counter() - t_filectx_start) * 1000, 1)
-    t_ctx_total_ms = round((time.perf_counter() - t_ctx_start) * 1000, 1)
+    # Fallback to simplified sync implementation
+    # (The full async version would require major refactoring of both endpoints)
+    t_ctx_start = time.perf_counter()
+
     try:
-        print(json.dumps({
-            "metric": "context_timing",
-            "dense_ms": t_dense_ms,
-            "mem_ms": t_mem_ms,
-            "eph_ms": t_eph_ms,
-            "rrf_ms": t_rrf_ms,
-            "filectx_ms": t_filectx_ms,
-            "ctx_total_ms": t_ctx_total_ms,
-            "counts": {
-                "dense": len(dense_hits or []),
-                "mem": len(mem_sem_hits or []),
-                "eph": len(eph_hits or []),
-                "all": len(all_hits or [])
-            },
-            "msg_len": len(message or ""),
-            "session": session_id or "-"
-        }))
-    except Exception:
-        pass
+        # Use unified retrieval with the new semantic memory function
+        retriever = get_retriever()
+        _, dense_hits = retriever.build_context(message, user_id=user_id)
+        dense_hits = dense_hits[:3]  # Limit results
 
-    uploads_info = None
-    if session_id and session_id in EPHEMERAL_SESSIONS:
-        try:
-            items = EPHEMERAL_SESSIONS[session_id].get("items") or []
-            files = []
-            for it in items:
-                p = it.get("path", "(upload)")
-                fname = str(p).split("::", 1)[0]
-                if fname not in files:
-                    files.append(fname)
-            uploads_info = f"count={len(files)} files: {', '.join(files[:6])}"
-        except Exception:
-            uploads_info = "present"
+        # Get semantic memories
+        mem_sem_hits = _semantic_memory_retrieve(user_id, message, limit=3) if len(message.split()) >= 15 else []
 
-    return context, all_hits, dense_hits, file_context, uploads_info
+        # Get ephemeral hits
+        eph_hits = _ephemeral_retrieve(session_id, message, top_k=5)
+
+        # RRF merge
+        all_hits = _rrf_merge([dense_hits, mem_sem_hits, eph_hits], top_k=5)
+
+        # Build context
+        context_parts = []
+        if all_hits:
+            context_parts.append("\n\n".join(f"[{i+1}] {h['text']}" for i, h in enumerate(all_hits)))
+
+        # File context
+        file_context = ""
+        if session_id and session_id in EPHEMERAL_SESSIONS:
+            try:
+                items = EPHEMERAL_SESSIONS[session_id].get("items") or []
+                if items:
+                    relevant_items = []
+                    query_lower = message.lower()
+                    for item in items[:3]:
+                        item_text = item.get('text', '').lower()
+                        if any(word in item_text for word in query_lower.split() if len(word) > 3):
+                            relevant_items.append(item)
+                    if relevant_items:
+                        blocks = []
+                        for item in relevant_items:
+                            path = item.get('path', 'upload')
+                            text = item.get('text', '')
+                            blocks.append(f"Content from {path}:\n{text}")
+                        file_context = "\n\n" + "\n\n".join(blocks)
+            except Exception:
+                pass
+
+        if file_context:
+            context_parts.append(file_context)
+
+        context = "\n\n".join(context_parts) if context_parts else ""
+
+        # Uploads info
+        uploads_info = None
+        if session_id and session_id in EPHEMERAL_SESSIONS:
+            try:
+                items = EPHEMERAL_SESSIONS[session_id].get("items") or []
+                files = []
+                for it in items:
+                    p = it.get("path", "(upload)")
+                    fname = str(p).split("::", 1)[0]
+                    if fname not in files:
+                        files.append(fname)
+                uploads_info = f"count={len(files)} files: {', '.join(files[:6])}"
+            except Exception:
+                uploads_info = "present"
+
+        t_ctx_total_ms = round((time.perf_counter() - t_ctx_start) * 1000, 1)
+        print(f"Context built in {t_ctx_total_ms}ms")
+
+        return context, all_hits, dense_hits, file_context, uploads_info
+
+    except Exception as e:
+        print(f"Context building failed: {e}")
+        # Minimal fallback
+        return "", [], [], "", None
 
 # ----------------- Session history (Redis-backed) -----------------
 DEFAULT_SESSION_ID = "default"
@@ -681,6 +955,39 @@ def _verify_github_sig(secret: str, payload: bytes, signature: Optional[str]) ->
         return False
     mac = hmac.new(secret.encode(), msg=payload, digestmod=hashlib.sha256)
     return hmac.compare_digest(mac.hexdigest(), signature.split("=", 1)[1])
+
+# ----------------- Async SQLite Operations -----------------
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
+# Global thread pool for SQLite operations
+_sqlite_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="sqlite")
+
+async def _async_recall_memories(user_id: str, limit: int = 20, contains: Optional[str] = None):
+    """Async wrapper for recall_memories to prevent blocking event loop."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_sqlite_executor, recall_memories, user_id, limit, contains)
+
+async def _async_add_memory(user_id: str, content: str, mtype: str = "note"):
+    """Async wrapper for add_memory."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_sqlite_executor, add_memory, user_id, content, mtype)
+
+async def _async_add_task(user_id: str, content: str, due_ts: Optional[int] = None):
+    """Async wrapper for add_task."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_sqlite_executor, add_task, user_id, content, due_ts)
+
+async def _async_list_tasks(user_id: str, status: Optional[str] = "open", limit: int = 100):
+    """Async wrapper for list_tasks."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_sqlite_executor, list_tasks, user_id, status, limit)
+
+async def _async_list_mem_items(user_id: str, kind: str | None = None, tags_like: str | None = None, updated_after: int | None = None, limit: int = 100):
+    """Async wrapper for list_mem_items."""
+    from memory import list_mem_items as sync_list_mem_items
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_sqlite_executor, sync_list_mem_items, user_id, kind, tags_like, updated_after, limit)
 
 # ----------------- Memory maintenance -----------------
 @app.post("/admin/memory/maintenance")
@@ -903,9 +1210,8 @@ def admin_reindex(x_api_key: Optional[str] = Header(default=None)):
     else:
         ingest_from_dir("./vault")
 
-    # refresh retriever
-    global _rag
-    _rag = None
+    # Refresh retriever using unified manager
+    RetrieverManager.reset_retriever()
     _ = get_retriever()
 
     return {"status": "ok", "source": "github_zip", "note": "index rebuilt from repo"}
@@ -931,24 +1237,23 @@ async def github_webhook(request: Request):
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
-    global _rag
-    _rag = None
+    RetrieverManager.reset_retriever()
     _ = get_retriever()
 
     return {"status": "ok", "mode": "zip_rebuild"}
 
 # ----------------- Chat -----------------
 @app.post("/chat", response_model=ChatOut)
-def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_api_key)):
+async def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_api_key)):
     if not payload.message.strip():
         raise HTTPException(400, "message required")
 
     # Memory check for non-streaming endpoint too
     current_memory, memory_status = get_cached_memory_status()
     
-    if memory_status["should_reject"]:
-        force_garbage_collection()
-        new_memory = get_memory_usage()
+    if memory_manager.should_reject_request():
+        memory_manager.force_garbage_collection()
+        new_memory = memory_manager.get_current_usage()
         if new_memory >= MEMORY_LIMIT_MB:
             raise HTTPException(
                 503, 
@@ -966,10 +1271,9 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
         raise HTTPException(status_code=400, detail=f"Retriever not ready: {e}. Run `python ingest.py`.") from e
 
     # Recall memories (defensive formatting) — include both legacy and structured items
-    mems = recall_memories("soumya", limit=6)
+    mems = await _async_recall_memories("soumya", limit=6)
     try:
-        from memory import list_mem_items
-        structured = list_mem_items("soumya", kind=None, limit=6)
+        structured = await _async_list_mem_items("soumya", kind=None, limit=6)
     except Exception:
         structured = []
     
@@ -1054,7 +1358,7 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
 
     # Increase caps for fuller answers
     max_tokens = 1024 if len(payload.message) < 120 else 2048
-    reply = cerebras_chat(messages, temperature=0.3, max_tokens=max_tokens)
+    reply = await unified_chat_completion(messages, temperature=0.3, max_tokens=max_tokens, stream=False)
     # Normalize and format output consistently
     prefer_table = bool(re.search(r"\b(table|tabulate|comparison|vs)\b", payload.message, flags=re.I))
     formatted_md = format_markdown_unified(reply, prefer_table=prefer_table, prefer_compact=False)
@@ -1092,18 +1396,18 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
     # Optional: store a quick memory
     if payload.make_note:
         # Ensure correct parameter order: content first, then type
-        add_memory(payload.user_id, content=payload.make_note, mtype="note")
+        await _async_add_memory(payload.user_id, content=payload.make_note, mtype="note")
 
     if payload.save_fact:
-        add_fact(payload.user_id, payload.save_fact)
+        await _async_add_memory(payload.user_id, content=payload.save_fact, mtype="fact")
     if payload.save_task:
-        add_task(payload.user_id, payload.save_task)
+        await _async_add_task(payload.user_id, payload.save_task)
     
     # Smart AI-powered task detection
     if not payload.save_task:
         task_content = _smart_detect_task(payload.message)
         if task_content:
-            add_task(payload.user_id, task_content)
+            await _async_add_task(payload.user_id, task_content)
             print(f"🤖 AI-detected task: {task_content}")
 
     # Background memory extraction (feature-flagged)
@@ -1128,22 +1432,21 @@ def chat(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_a
 
 # ----------------- Chat (streaming SSE) -----------------
 @app.post("/chat/stream")
-def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_api_key)):
+async def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(require_api_key)):
     if not payload.message.strip():
         raise HTTPException(400, "message required")
 
     # Graceful degradation: check memory and reject if overloaded
-    current_memory = get_memory_usage()
-    memory_status = check_memory_and_alert(current_memory)
+    current_memory, memory_status = get_cached_memory_status()
     
     print(f"Memory status: {memory_status['status']} ({current_memory:.1f}MB)")
     
-    if memory_status["should_reject"]:
+    if memory_manager.should_reject_request():
         # Force garbage collection attempt
-        force_garbage_collection()
-        
+        memory_manager.force_garbage_collection()
+
         # Check again after cleanup
-        new_memory = get_memory_usage()
+        new_memory = memory_manager.get_current_usage()
         if new_memory >= MEMORY_LIMIT_MB:
             error_msg = f"Server temporarily overloaded ({new_memory:.1f}MB). Please try again in a moment or use a simpler query."
             return StreamingResponse(
@@ -1158,10 +1461,13 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
         # Prompt-only LRU
         fast_cached = _prompt_lru_get(payload.message.strip())
         if fast_cached:
-            def event_gen_fast():
-                yield from _sse_event("start", "ok")
-                yield from _sse_event("final", fast_cached or "")
-                yield from _sse_event("message", "[DONE]")
+            async def event_gen_fast():
+                for event in _sse_event("start", "ok"):
+                    yield event
+                for event in _sse_event("final", fast_cached or ""):
+                    yield event
+                for event in _sse_event("message", "[DONE]"):
+                    yield event
             return StreamingResponse(event_gen_fast(), media_type="text/event-stream")
     except Exception:
         pass
@@ -1214,15 +1520,18 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
         context_hash = _get_context_hash(all_hits, file_context)
         cached_response = _get_cached_response(payload.message, context_hash)
         if cached_response:
-            def event_gen_cached():
-                yield from _sse_event("start", "ok")
-                yield from _sse_event("final", cached_response or "")
-                yield from _sse_event("message", "[DONE]")
+            async def event_gen_cached():
+                for event in _sse_event("start", "ok"):
+                    yield event
+                for event in _sse_event("final", cached_response or ""):
+                    yield event
+                for event in _sse_event("message", "[DONE]"):
+                    yield event
             return StreamingResponse(event_gen_cached(), media_type="text/event-stream")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error preparing chat: {e}")
 
-    def event_gen():
+    async def event_gen():
         buffer = []
         last_ping = time.time()
         try:
@@ -1231,11 +1540,12 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
             yield "data: ok\n\n"
             # Increased caps for fuller streamed answers
             stream_max_tokens = 1024 if len(payload.message) < 120 else 2048
-            for chunk in cerebras_chat_stream(messages, temperature=0.3, max_tokens=stream_max_tokens):
+            async for chunk in cerebras_chat_stream_async(messages, temperature=0.3, max_tokens=stream_max_tokens):
                 if chunk:
                     buffer.append(chunk)
                     # Emit raw markdown in evented SSE (no JSON). Ensure multi-line chunks are split into proper SSE data lines.
-                    yield from _sse_event("delta", str(chunk))
+                    for event in _sse_event("delta", str(chunk)):
+                        yield event
                 # Heartbeat every ~12s to keep proxies from closing the stream
                 if time.time() - last_ping > 12:
                     last_ping = time.time()
@@ -1248,8 +1558,8 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
         finally:
             try:
                 full = "".join(buffer)
-                # Log memory usage after processing
-                final_memory = get_memory_usage()
+                # Log memory usage after processing (use cached value to avoid extra psutil call)
+                final_memory, _ = get_cached_memory_status()
                 print(f"Memory usage after query: {final_memory:.1f}MB")
                 try:
                     _auto_capture_intents(payload.user_id, payload.message)
@@ -1275,19 +1585,21 @@ def chat_stream(payload: ChatIn, background_tasks: BackgroundTasks, _=Depends(re
                 # Create tasks if requested (parity with non-stream endpoint)
                 try:
                     if payload.save_task and payload.save_task.strip():
-                        add_task(payload.user_id, payload.save_task.strip())
+                        await _async_add_task(payload.user_id, payload.save_task.strip())
                     else:
                         # Smart AI-powered task detection
                         task_content = _smart_detect_task(payload.message)
                         if task_content:
-                            add_task(payload.user_id, task_content)
+                            await _async_add_task(payload.user_id, task_content)
                             print(f"🤖 AI-detected task: {task_content}")
                 except Exception as e:
                     print(f"Task creation skipped: {e}")
                 
                 # Emit final markdown via evented SSE with proper multi-line framing
-                yield from _sse_event("final", formatted_md or full)
-                yield from _sse_event("message", "[DONE]")
+                for event in _sse_event("final", formatted_md or full):
+                    yield event
+                for event in _sse_event("message", "[DONE]"):
+                    yield event
             except Exception as e:
                 print(f"Error in final processing: {e}")
                 yield f"data: {{\"type\":\"error\",\"content\":\"Error processing response: {str(e)}\"}}\n\n"
